@@ -1,0 +1,61 @@
+[{
+		"IndexName": "code_",
+		"MgoKeySchema": {
+			"MgoIndexKeys": [{
+				"Name": "code",
+				"Direction": "1"
+			}],
+			"MgoIsUnique": true
+		}
+	},
+	{
+		"IndexName": "name",
+		"MgoKeySchema": {
+			"MgoIndexKeys": [{
+				"Name": "name",
+				"Direction": "1"
+			}],
+			"MgoIsUnique": false
+		}
+	},
+	{
+		"IndexName": "first_letter",
+		"MgoKeySchema": {
+			"MgoIndexKeys": [{
+				"Name": "first_letter",
+				"Direction": "1"
+			}],
+			"MgoIsUnique": false
+		}
+	},
+	{
+		"IndexName": "pinyin",
+		"MgoKeySchema": {
+			"MgoIndexKeys": [{
+				"Name": "pinyin",
+				"Direction": "1"
+			}],
+			"MgoIsUnique": false
+		}
+	},
+	{
+		"IndexName": "parent_code",
+		"MgoKeySchema": {
+			"MgoIndexKeys": [{
+				"Name": "parent_code",
+				"Direction": "1"
+			}],
+			"MgoIsUnique": false
+		}
+	},
+	{
+		"IndexName": "zip_code",
+		"MgoKeySchema": {
+			"MgoIndexKeys": [{
+				"Name": "zip_code",
+				"Direction": "1"
+			}],
+			"MgoIsUnique": false
+		}
+	}
+]

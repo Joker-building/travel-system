@@ -1,0 +1,89 @@
+{
+  "id": "uni-hello-i18n",
+  "name": "Hello i18n",
+  "displayName": "hello-i18n 示例工程",
+  "version": "1.0.2",
+  "description": "uni-app 国际化演示",
+  "keywords": [
+    "i18n",
+    "hello-i18n",
+    "多语言"
+  ],
+  "dcloudext": {
+    "category": [
+      "前端页面模板",
+      "uni-app前端项目模板"
+    ],
+    "sale": {
+      "regular": {
+        "price": "0.00"
+      },
+      "sourcecode": {
+        "price": "0.00"
+      }
+    },
+    "contact": {
+      "qq": ""
+    },
+    "declaration": {
+      "ads": "无",
+      "data": "无",
+      "permissions": "无"
+    },
+    "npmurl": ""
+  },
+  "repository": "",
+  "uni_modules": {
+    "platforms": {
+      "cloud": {
+        "tcb": "y",
+        "aliyun": "y"
+      },
+      "client": {
+        "App": {
+          "app-vue": "u",
+          "app-nvue": "u"
+        },
+        "H5-mobile": {
+          "Safari": "u",
+          "Android Browser": "u",
+          "微信浏览器(Android)": "u",
+          "QQ浏览器(Android)": "u"
+        },
+        "H5-pc": {
+          "Chrome": "u",
+          "IE": "u",
+          "Edge": "u",
+          "Firefox": "u",
+          "Safari": "u"
+        },
+        "小程序": {
+          "微信": "u",
+          "阿里": "u",
+          "百度": "u",
+          "字节跳动": "u",
+          "QQ": "u",
+          "京东": "u"
+        },
+        "快应用": {
+          "华为": "u",
+          "联盟": "u"
+        },
+        "Vue": {
+          "vue2": "u",
+          "vue3": "u"
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "@dcloudio/uni-ui": "^1.5.11",
+    "@icon-park/vue-next": "^1.4.2",
+    "jose": "^6.0.12",
+    "jsrsasign": "^11.1.0",
+    "swiper": "^11.2.10",
+    "text-decoding": "^1.0.0",
+    "text-encoding": "^0.7.0",
+    "vue": "^3.0.0"
+  }
+}

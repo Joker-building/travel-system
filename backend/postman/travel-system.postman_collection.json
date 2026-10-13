@@ -1,0 +1,944 @@
+{
+  "info": {
+    "name": "travel-system Backend API",
+    "description": "AI辅助个性化旅游行程定制系统 后端接口集合\n默认 base_url=http://127.0.0.1:8000\n流程: 注册/登录(自动写入token) -> 建会话(写session_id) -> 建行程(写trip_id) -> 其他接口自动带token",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://127.0.0.1:8000"
+    },
+    {
+      "key": "token",
+      "value": ""
+    },
+    {
+      "key": "session_id",
+      "value": ""
+    },
+    {
+      "key": "trip_id",
+      "value": ""
+    },
+    {
+      "key": "scenic_id",
+      "value": ""
+    }
+  ],
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "value",
+        "value": "{{token}}"
+      }
+    ]
+  },
+  "item": [
+    {
+      "name": "基础/健康检查",
+      "item": [
+        {
+          "name": "根路径(服务信息)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                ""
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "健康检查",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "认证",
+      "item": [
+        {
+          "name": "用户注册",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/auth/register",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "register"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"username\": \"testuser\", \"password\": \"123456\", \"confirm_password\": \"123456\", \"nickname\": \"测试用户\", \"city\": \"武汉\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "用户登录",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/auth/login",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "login"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"username\": \"testuser\", \"password\": \"123456\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "if (r && r.data && r.data.access_token) {",
+                  "  pm.collectionVariables.set('token', r.data.access_token);",
+                  "  console.log('token saved');",
+                  "}"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "行程管理",
+      "item": [
+        {
+          "name": "行程列表",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/trips/list",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "trips",
+                "list"
+              ]
+            }
+          }
+        },
+        {
+          "name": "创建行程(自动保存trip_id)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/trips/create",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "trips",
+                "create"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"trip_name\": \"武汉周末游\", \"dest_city\": \"武汉\", \"start_date\": \"2026-08-20\", \"end_date\": \"2026-08-22\", \"total_budget\": 2000}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "const d = r && r.data;",
+                  "if (d) {",
+                  "  const id = d.id !== undefined ? d.id : (d.trip_id !== undefined ? d.trip_id : null);",
+                  "  if (id !== null) pm.collectionVariables.set('trip_id', id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "行程详情",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/trips/detail/:trip_id",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "trips",
+                "detail",
+                ":trip_id"
+              ]
+            }
+          }
+        },
+        {
+          "name": "更新行程",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/trips/update/:trip_id",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "trips",
+                "update",
+                ":trip_id"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"trip_name\": \"宜昌三峡游\", \"dest_city\": \"宜昌\", \"total_budget\": 3500}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "删除行程",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/trips/delete/:trip_id",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "trips",
+                "delete",
+                ":trip_id"
+              ]
+            }
+          }
+        },
+        {
+          "name": "更新行程节点",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/trips/detail/update/:detail_id",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "trips",
+                "detail",
+                "update",
+                ":detail_id"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"start_time\": \"09:00\", \"end_time\": \"11:30\", \"remark\": \"登黄鹤楼\", \"spot_budget\": 80, \"sort_order\": 1, \"day_num\": 1}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "删除行程节点",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/trips/detail/delete/:detail_id",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "trips",
+                "detail",
+                "delete",
+                ":detail_id"
+              ]
+            }
+          }
+        },
+        {
+          "name": "新增行程天数",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/trips/day/add",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "trips",
+                "day",
+                "add"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"trip_id\": \"{{trip_id}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "删除行程天数",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/trips/day/delete",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "trips",
+                "day",
+                "delete"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"trip_id\": \"{{trip_id}}\", \"day_num\": 2}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "AI对话",
+      "item": [
+        {
+          "name": "AI对话(行程生成/问答)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/ai/chat",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "ai",
+                "chat"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"session_id\": \"{{session_id}}\", \"message\": \"帮我规划武汉到宜昌及恩施的5日旅行\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "会话列表",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/ai/sessions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "ai",
+                "sessions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "会话消息记录",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/ai/sessions/:session_id/messages",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "ai",
+                "sessions",
+                ":session_id",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "创建会话(自动保存session_id)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/ai/sessions/create?title=新对话",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "ai",
+                "sessions",
+                "create"
+              ],
+              "query": [
+                {
+                  "key": "title",
+                  "value": "新对话"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "const d = r && r.data;",
+                  "if (d) {",
+                  "  const id = d.id !== undefined ? d.id : (d.session_id !== undefined ? d.session_id : null);",
+                  "  if (id !== null) pm.collectionVariables.set('session_id', id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "删除会话",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/ai/sessions/:session_id",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "ai",
+                "sessions",
+                ":session_id"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "AI辅助规划",
+      "item": [
+        {
+          "name": "景点搜索(数据库)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/planning/scenic/search?keyword=黄鹤楼&city=武汉",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "planning",
+                "scenic",
+                "search"
+              ],
+              "query": [
+                {
+                  "key": "keyword",
+                  "value": "黄鹤楼"
+                },
+                {
+                  "key": "city",
+                  "value": "武汉"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "AI搜索景点(候选列表)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/planning/scenic/ai-search",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "planning",
+                "scenic",
+                "ai-search"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"keyword\": \"亲子景点\", \"city\": \"武汉\", \"trip_id\": null, \"day_num\": null}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "添加景点到行程",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/planning/scenic/add-to-trip",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "planning",
+                "scenic",
+                "add-to-trip"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"scenic_id\": \"{{scenic_id}}\", \"trip_id\": \"{{trip_id}}\", \"day_num\": 1}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "AI获取景点详情",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/planning/scenic/ai-detail",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "planning",
+                "scenic",
+                "ai-detail"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"scenic_name\": \"黄鹤楼\", \"city\": \"武汉\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "景点信息(按ID)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/planning/scenic/:scenic_id",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "planning",
+                "scenic",
+                ":scenic_id"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "AI语音对话",
+      "item": [
+        {
+          "name": "语音转文字(STT)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/ai/voice/stt",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "ai",
+                "voice",
+                "stt"
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "D:/travel-system/backend/postman\\sample.wav"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "语音对话(STT+AI)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/ai/voice/chat",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "ai",
+                "voice",
+                "chat"
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "D:/travel-system/backend/postman\\sample.wav"
+                },
+                {
+                  "key": "session_id",
+                  "type": "text",
+                  "value": "{{session_id}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "语音服务状态",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/ai/voice/status",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "ai",
+                "voice",
+                "status"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "用户信息管理",
+      "item": [
+        {
+          "name": "获取用户信息",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/user/info",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "user",
+                "info"
+              ]
+            }
+          }
+        },
+        {
+          "name": "修改用户信息",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/user/update",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "user",
+                "update"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"nickname\": \"新昵称\", \"city\": \"宜昌\", \"gender\": \"男\", \"phone\": \"13800000000\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "上传头像",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/user/avatar/upload",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "user",
+                "avatar",
+                "upload"
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "D:/travel-system/backend/postman\\sample.png"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "退出登录",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/user/logout",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "user",
+                "logout"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "天气服务",
+      "item": [
+        {
+          "name": "城市天气预报",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/weather/forecast?city=武汉&days=3",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "weather",
+                "forecast"
+              ],
+              "query": [
+                {
+                  "key": "city",
+                  "value": "武汉"
+                },
+                {
+                  "key": "days",
+                  "value": "3"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

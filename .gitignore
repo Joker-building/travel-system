@@ -1,0 +1,48 @@
+# =====================
+# 敏感配置 / 密钥（绝不能进 git）
+# =====================
+backend/.env
+.env
+.env.*
+!.env.example
+project.private.config.json
+**/project.private.config.json
+
+# =====================
+# 依赖与构建产物（非源码）
+# =====================
+# Python
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Node / uni-app
+node_modules/
+lmx/unpackage/
+lmx/node_modules/
+lmx/dist/
+lmx/build/
+lmx/.hbuilderx/
+lmx/.rider/
+*.log
+npm-debug.log*
+
+# =====================
+# 用户上传数据（含隐私）
+# =====================
+uploads/*
+!uploads/.gitkeep
+backend/uploads/**
+
+# =====================
+# 系统 / 编辑器
+# =====================
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+.trae/
+.workbuddy/
