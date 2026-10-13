@@ -8,6 +8,10 @@ backend/.env
 project.private.config.json
 **/project.private.config.json
 
+# SSH 密钥（部署凭证，绝不能进 git）
+tk_cwd
+tk_cwd.pub
+
 # =====================
 # 依赖与构建产物（非源码）
 # =====================
