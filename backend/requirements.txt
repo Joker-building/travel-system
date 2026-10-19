@@ -3,13 +3,16 @@
 # 安装：pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 #
 # 依赖分层说明（2026-10-14 审计结论，逐条比对 .venv 与 requirements.frozen.txt）：
-#   1) 本文件 = 核心运行时依赖，仅覆盖「非 RAG」业务代码真正 import 的第三方包：
+#   1) 本文件 = 核心运行时依赖，仅覆盖业务代码真正 import 的第三方包：
 #      fastapi / uvicorn / sqlalchemy / pymysql / cryptography /
 #      pydantic / pydantic-settings / python-jose / passlib / python-multipart /
 #      httpx / python-dotenv / aiofiles
 #      —— 上述每一项均已与 .venv / requirements.frozen.txt 实际安装版本核对一致。
-#   2) RAG 检索层依赖（langchain 1.x 栈 + pgvector + psycopg3）单独维护在
-#      requirements_rag.txt，不污染本文件。当前 .venv 已同时安装两套依赖。
+#   2) Langchain 接入层（非 RAG）：仅作为 DeepSeek 的 LLM 封装（ChatOpenAI）与
+#      行程规划 tool-calling 智能体（orchestrator.run_itinerary_agent）的编排层，
+#      不含任何向量检索 / 知识库逻辑。依赖 langchain / langchain-openai /
+#      langchain-core（详见下方清单）。RAG 专属的 langchain-postgres /
+#      langchain-ollama / pgvector / psycopg 已卸载，本清单不收录。
 #   3) 语音识别依赖 vosk 以本地 vendored 形式放在 libs/vosk，不进 pip 依赖；
 #      wave / struct 等为 Python 标准库，无需安装。
 #   4) 历史版本曾计划引入 PDF 解析（extract_pdf.py，依赖 pdfplumber/PyMuPDF/
@@ -30,3 +33,8 @@ python-multipart==0.0.20
 httpx==0.28.1
 python-dotenv==1.0.1
 aiofiles==24.1.0
+
+# —— Langchain 接入层（非 RAG）：DeepSeek ChatOpenAI 封装 + 行程规划 tool-calling 智能体 ——
+langchain==1.4.5
+langchain-openai==1.7.1
+langchain-core==1.6.10

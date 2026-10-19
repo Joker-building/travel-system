@@ -1,123 +1,97 @@
-"""纯 Langchain 编排层 · 问答链与智能体
+"""Langchain 编排层（非 RAG）。
 
-检索层现在就是 Langchain PGVector 的 retriever（见 services/rag/vector_store.py），
-编排层只负责把「检索 → 拼上下文 → LLM → 解析」串成一条可调用链，不再有 LlamaIndex 桥接。
-
-- build_qa_chain：用 LCEL 构建 RAG 问答链，retriever 直接来自 PGVector。
-- build_agent（进阶）：tool-calling 智能体，工具含「景点检索」「天气查询」，演示 Langchain 的意图编排。
+提供两类能力：
+1) to_langchain_messages : 把工程内 {role, content} 消息列表转为 Langchain 消息对象。
+2) run_itinerary_agent   : 行程规划 tool-calling 智能体。
+   用 ChatOpenAI.bind_tools 强制调用 create_itinerary 工具，
+   内置「空工具调用 → 强制重试一次」兜底（沿用旧工程稳健策略）。
 """
+import json
 
-from typing import List, Optional
+from langchain_core.messages import (
+    SystemMessage,
+    HumanMessage,
+    AIMessage,
+    ToolMessage,
+)
 
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnablePassthrough
-from langchain_core.documents import Document
-from langchain_core.retrievers import BaseRetriever
-from langchain_core.tools import tool
-
-from services.langchain_layer.llm import get_deepseek_llm
-
-
-# doc_type → 中文标签，便于在上下文里标明资料类型
-DOC_TYPE_LABEL = {
-    "scenic_spot": "景点",
-    "city": "城市知识",
-    "guide": "深度攻略",
-    "topic": "主题专题",
-    "itinerary": "行程模板",
-    "faq": "常见问题",
-}
+from services.langchain_layer.llm import get_chat_model
 
 
-def _format_docs(docs: List[Document]) -> str:
-    """把召回的 Document 列表拼成一段上下文字符串，喂给 LLM。
+def to_langchain_messages(messages: list) -> list:
+    """将 [{role, content}, ...] 转换为 Langchain BaseMessage 列表。
 
-    兼容两类语料：scenic_spot（用 name）与 knowledge_doc（用 title），
-    并标注 doc_type 中文标签，帮助 LLM 区分「景点 / 城市知识 / 攻略 / 行程模板 / FAQ」。
+    支持 system / user / assistant / tool 四种角色；
+    对 None 内容做空串兜底，避免部分模型不接受 null content。
     """
-    if not docs:
-        return "（未检索到相关知识）"
-    blocks = []
-    for i, d in enumerate(docs, 1):
-        meta = d.metadata or {}
-        title = meta.get("title") or meta.get("name") or f"资料{i}"
-        dt = meta.get("doc_type", "")
-        label = DOC_TYPE_LABEL.get(dt, dt or "资料")
-        city = meta.get("city") or ""
-        head = f"【资料{i}｜{label}】{title}" + (f"（{city}）" if city else "")
-        blocks.append(head + "\n" + d.page_content)
-    return "\n\n".join(blocks)
+    lc_messages = []
+    for m in messages or []:
+        role = (m.get("role") or "").lower()
+        content = m.get("content")
+        if content is None:
+            content = ""
+        if role == "system":
+            lc_messages.append(SystemMessage(content=content))
+        elif role == "user":
+            lc_messages.append(HumanMessage(content=content))
+        elif role == "assistant":
+            # 仅文本助手消息（历史 QA 落库为自然语言，不含 tool_calls）
+            lc_messages.append(AIMessage(content=content))
+        elif role == "tool":
+            lc_messages.append(
+                ToolMessage(content=content, tool_call_id=m.get("tool_call_id", ""))
+            )
+        else:
+            # 未知角色按 user 处理，保证不丢消息
+            lc_messages.append(HumanMessage(content=content))
+    return lc_messages
 
 
-def build_qa_chain(retriever: BaseRetriever, llm=None):
-    """构建 RAG 问答链，返回可直接 chain.invoke(question) 的 Runnable。
+async def run_itinerary_agent(messages: list, tool_schema: dict,
+                              *, temperature: float = 0.3,
+                              model=None) -> dict:
+    """行程规划 tool-calling 智能体。
 
-    retriever 是 Langchain PGVector 的 retriever（可带 city 过滤）。
+    参数:
+        messages    : 已经拼装好的消息列表（含 system + user 轮次，即 ai_service 的
+                      messages_for_api），格式为 [{role, content}, ...]。
+        tool_schema : OpenAI function-calling 风格的单个工具定义
+                      （如 ITINERARY_TOOL 整体，或直接传其 function 体）。
+
+    返回:
+        {
+          "tool_calls": [{"name", "args", "id", "type"}, ...],  # 可能为空列表
+          "content": str,      # 模型文本（无工具调用时可用）
+        }
+        调用方负责：解析 args、做城市/天数/预算兜底、构造返回体。
     """
-    llm = llm or get_deepseek_llm()
-    prompt = ChatPromptTemplate.from_messages([
-        ("system",
-         "你是专业的旅游助手。下面【检索到的资料】可能包含多种类型："
-         "景点本体、城市知识、深度攻略、主题专题、行程模板、常见问题。"
-         "请严格【只使用】检索资料中的信息来回答，不要编造未出现的事实；"
-         "信息不足时直接说不知道。\n"
-         "当用户问行程规划 / 玩法 / 城市概况时，优先结合「行程模板 / 城市知识 / 深度攻略」"
-         "组织回答，并可在合适处引用资料中出现的具体景点名称；"
-         "问具体景点时以「景点」类资料为准。回答用自然、有条理的中文，可适当分点。"),
-        ("human",
-         "【检索到的资料】\n{context}\n\n【用户问题】\n{question}"),
-    ])
-    # LCEL 管道：先并行算出 context（检索+拼接）与 question（透传），再进 prompt→LLM→解析
-    chain = (
-        {"context": retriever | _format_docs, "question": RunnablePassthrough()}
-        | prompt
-        | llm
-        | StrOutputParser()
-    )
-    return chain
+    # 兼容两种传参：ITINERARY_TOOL 整体（含 type/function）或直接传 function 体
+    if tool_schema.get("type") == "function" and "function" in tool_schema:
+        openai_tool = tool_schema
+    else:
+        openai_tool = {"type": "function", "function": tool_schema}
 
+    if model is None:
+        model = get_chat_model(temperature=temperature)
+    model_with_tools = model.bind_tools([openai_tool], tool_choice="required")
 
-# ===================== 进阶：Langchain 智能体（意图编排） =====================
+    lc_messages = to_langchain_messages(messages)
+    ai_msg = await model_with_tools.ainvoke(lc_messages)
 
-def build_agent(retriever: BaseRetriever, llm=None, weather_service=None):
-    """tool-calling 智能体：根据用户问题自动决定调用「景点检索」还是「天气查询」。
+    # 兜底：模型偶发未触发工具调用（限流/安全过滤/网络抖动）→ 强制重试一次
+    if not getattr(ai_msg, "tool_calls", None):
+        retry_note = HumanMessage(content=(
+            "（系统补注：你上一轮未返回行程工具调用，请立即调用 create_itinerary 工具"
+            "返回完整行程方案，不要输出纯文本或 JSON 对象。）"
+        ))
+        ai_msg = await model_with_tools.ainvoke(lc_messages + [retry_note])
 
-    注意：
-      - 此处 retriever 直接来自 PGVector，不再依赖任何 LlamaIndex 对象。
-      - Langchain 1.x 的 agent API 已改为 ``create_agent``，返回 CompiledStateGraph；
-        调用方式：``agent.invoke({"messages": [("human", "用户问题")]})``。
-    """
-    from langchain.agents import create_agent
-
-    @tool
-    def scenic_search(query: str) -> str:
-        """在景点知识库中检索与 query 相关的景点信息（城市可在 query 中指明）。"""
-        docs = retriever.invoke(query)
-        return _format_docs(docs)
-
-    @tool
-    def get_weather(city: str) -> str:
-        """查询指定城市的天气预报。"""
-        if weather_service is None:
-            return "（未配置天气服务）"
-        import asyncio
-        try:
-            data = asyncio.run(weather_service.get_weather_forecast(city, days=3))
-        except RuntimeError as e:
-            if "cannot be called from a running event loop" in str(e):
-                loop = asyncio.get_event_loop()
-                data = loop.run_until_complete(weather_service.get_weather_forecast(city, days=3))
-            else:
-                raise
-        return (weather_service.format_weather_for_prompt(data)
-                if data.get("success") else "天气查询失败")
-
-    tools = [scenic_search, get_weather]
-    llm = llm or get_deepseek_llm()
-    agent = create_agent(
-        llm,
-        tools,
-        system_prompt="你是旅游助手，按需调用工具获取景点或天气信息后再回答。",
-    )
-    return agent
+    tool_calls = []
+    for tc in getattr(ai_msg, "tool_calls", None) or []:
+        tool_calls.append({
+            "name": tc.get("name"),
+            "args": tc.get("args"),
+            "id": tc.get("id"),
+            "type": tc.get("type", "function"),
+        })
+    return {"tool_calls": tool_calls, "content": ai_msg.content or ""}
