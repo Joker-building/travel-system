@@ -755,7 +755,7 @@ class AIService:
         print(f"[AI] 阶段耗时 | 会话与历史加载: {(_t_now - _t_prev) * 1000:.1f}ms | 累计: {(_t_now - _t_total) * 1000:.1f}ms", flush=True)
         _t_prev = _t_now
 
-        # ===== 规划意图判定（原始规则，不依赖 RAG / 意图分类器）=====
+        # ===== 规划意图判定（原始规则，不依赖意图分类器）=====
         # plan 由确定性规则守住（_is_plan_intent + _is_plan_continuer），其余走通用 QA。
         is_plan = (
             AIService._is_plan_intent(message)

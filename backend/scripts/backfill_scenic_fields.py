@@ -2,7 +2,7 @@
 
 背景（已核验真实数据）：
   scenic_spot 共 186 条，但 recommendation / category / tags / rating 仅约 19 条有值，
-  price 约 78 条。当前 RAG 索引对多数景点基本只靠 introduction，检索与卡片质量受限。
+  price 约 78 条。多数景点主要依赖 introduction 字段，检索与卡片质量受限。
 
 本脚本只填「空值」，不覆盖已有内容，也不删数据：
   - category：按景点名称启发式归类（自然风光 / 历史古迹 / 主题乐园 / 城市观光）。

@@ -8,6 +8,9 @@ backend/.env
 project.private.config.json
 **/project.private.config.json
 
+# 本地备份目录（含清理前的历史文件，不进 git）
+.backup/
+
 # SSH 密钥（部署凭证，绝不能进 git）
 tk_cwd
 tk_cwd.pub
