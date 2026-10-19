@@ -32,18 +32,25 @@
 
 ---
 
-## 三、确认后端地址（一般无需改）
+## 三、确认后端地址（已解耦，多机/真机调试无需改代码）
 
-打开 `lmx/utils/config.js`：
+后端地址由 `lmx/utils/config.js` 的 `getApiBaseUrl()` 运行时解析，优先级：
+1. **运行时手动覆盖**（最高）：`uni.setStorageSync('API_BASE_URL', 'http://192.168.1.100:8000')`
+   —— 换电脑 / 真机调试时在「我的」页或调试控制台设置一次即可，无需重新编译。
+2. **环境变量**：生产包（`NODE_ENV=production`）自动走 `PROD_BASE_URL`，开发走 `DEV_BASE_URL`。
+3. **开发默认** `DEV_BASE_URL = 'http://127.0.0.1:8000'`（见 `config.js` 顶部常量）。
+
 ```js
-export const API_CONFIG = {
-  BASE_URL: 'http://127.0.0.1:8000',   // 与后端启动地址一致即可
-  TIMEOUT: 10000,
-  VERSION: 'v1'
-};
+// lmx/utils/config.js
+const DEV_BASE_URL = 'http://127.0.0.1:8000';        // 本机/H5 调试；真机调试改此 IP 为电脑局域网地址
+const PROD_BASE_URL = 'https://travel.jasenon.xyz';   // 打包发行后自动启用
+export function getApiBaseUrl() { /* 运行时按上述优先级解析 */ }
 ```
-- 若把后端跑在别的 IP/端口，改这里即可。
-- 注意：H5 在浏览器里运行时，页面由 HBuilderX 本地服务托管，但接口请求会发到 `127.0.0.1:8000`（后端所在机器），所以**后端和浏览器要在同一台机器**才能这样连。
+
+- **本机 H5 调试**：默认 `127.0.0.1:8000`，后端和浏览器同一台机器即可，一般不用改。
+- **真机 / 多机联调**：把 `DEV_BASE_URL` 改成你电脑的局域网 IP（如 `http://192.168.1.100:8000`，手机与电脑须同一 WiFi）；
+  或更推荐用运行时覆盖键 `API_BASE_URL`，连哪台后端都不用重新打包。
+- 注意：H5 在浏览器运行时，页面由 HBuilderX 本地服务托管，但接口请求发往后端地址，故本机场景后端与浏览器须同机。
 
 ---
 

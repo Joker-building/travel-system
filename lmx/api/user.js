@@ -1,10 +1,7 @@
 import request from '@/utils/request'
 import {
-	API_CONFIG
+	getApiBaseUrl
 } from '@/utils/config'
-
-// 获取API基础URL
-const baseUrl = API_CONFIG.BASE_URL;
 
 /**
  * 获取用户个人信息
@@ -63,7 +60,7 @@ export function uploadAvatar(filePath) {
 		import('@/utils/auth').then(auth => {
 			const token = auth.getToken()
 			uni.uploadFile({
-				url: baseUrl + '/api/user/avatar/upload',
+				url: getApiBaseUrl() + '/api/user/avatar/upload',
 				filePath,
 				name: 'file',
 				fileType: 'image',

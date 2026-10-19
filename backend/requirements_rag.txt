@@ -1,0 +1,30 @@
+# 纯 Langchain 1.x + pgvector 依赖清单（独立文件，不污染原 requirements.txt）
+# 安装：pip install -r requirements_rag.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+#
+# 版本锁定于 2026-10-14 官方 PyPI 最新稳定版（纯 Langchain 1.x 栈 + pgvector）。
+# 重要变更（相对旧 0.3 写法）：
+#   1) langchain 1.x 中 PGVector 已从 langchain_community 迁至 langchain_postgres 包；
+#   2) 驱动由 psycopg2 换为 psycopg3（langchain-postgres 的强制依赖）；
+#   3) pgvector 客户端须 <0.4（langchain-postgres 0.0.19 的硬性约束），故锁定 0.3.x；
+#   4) Embedding 走本机 Ollama 部署的 bge-m3（langchain-ollama），纯本地、免 torch、零联网。
+#      （如需改回 sentence-transformers，设 RAG_EMBED_BACKEND=hf 并补装
+#       langchain-huggingface + sentence-transformers。）
+
+# ---- Langchain 编排层（1.x 当前版本） ----
+langchain==1.4.5
+langchain-openai==1.7.1
+
+# ---- 文本分块（知识库长文入库前切分，1.x 已独立成包） ----
+langchain-text-splitters==1.1.3
+
+# ---- Postgres 向量库（1.x 中 PGVector 的归属包，psycopg3 驱动） ----
+langchain-postgres==0.0.19
+
+# ---- Embedding 本地推理（本机 Ollama 已部署 bge-m3:latest，维度 1024） ----
+langchain-ollama==1.1.0
+
+# ---- 向量库驱动 ----
+# langchain-postgres 依赖 psycopg3（非 psycopg2），[binary] 含预编译驱动
+psycopg[binary]==3.3.6
+# pgvector 是 Python 客户端；langchain-postgres 要求 <0.4，故锁 0.3.x
+pgvector==0.3.2

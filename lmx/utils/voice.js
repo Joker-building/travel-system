@@ -20,7 +20,7 @@ import {
 	getToken
 } from '@/utils/auth'
 import {
-	API_CONFIG
+	getApiBaseUrl
 } from '@/utils/config'
 
 /* ============ 平台检测 ============ */
@@ -279,7 +279,7 @@ export function uploadVoiceChat({
 } = {}) {
 	return new Promise((resolve, reject) => {
 		const token = getToken()
-		const url = API_CONFIG.BASE_URL + '/api/ai/voice/chat'
+		const url = getApiBaseUrl() + '/api/ai/voice/chat'
 		const header = {}
 		if (token) header['Authorization'] = `Bearer ${token}`
 

@@ -68,6 +68,7 @@
 						<text v-if="item.tripId" class="save-done-link" @click="goTripDetail(item.tripId)"> · 查看行程</text>
 					</view>
 				</view>
+				<text class="msg-time" v-if="item.time">{{ item.time }}</text>
 			</view>
 		</scroll-view>
 
@@ -269,7 +270,8 @@
 			if (res.data.code === 200) {
 				messages.value = (res.data.data.messages || []).map(msg => ({
 					role: msg.role,
-					content: parseMessageContent(msg.content, msg.role)
+					content: parseMessageContent(msg.content, msg.role),
+					time: msg.create_time ? formatTime(msg.create_time) : ''
 				}))
 				currentSessionId.value = sessionId
 				showHistoryPanel.value = false
@@ -344,15 +346,35 @@
 		}
 	}
 
+	// 当前时间（HH:mm），用于消息气泡下方展示
+	const nowTime = () => {
+		const d = new Date()
+		const pad = (n) => String(n).padStart(2, '0')
+		return pad(d.getHours()) + ':' + pad(d.getMinutes())
+	}
+
+	// 开启新一轮对话前，自动废弃未处理的「添加到行程」确认条（不点则默认放弃）
+	const discardPendingItineraries = () => {
+		messages.value.forEach(item => {
+			if (item.response_type === 'itinerary' && item.needs_save && !item.saved) {
+				item.needs_save = false
+			}
+		})
+	}
+
 	// 发送消息
 	const sendMsg = async () => {
 		const content = inputContent.value.trim()
 		if (!content || isLoading.value) return
 
+		// 发出新消息即视为放弃上一轮未处理的行程确认
+		discardPendingItineraries()
+
 		// 用户消息添加列表
 		messages.value.push({
 			role: 'user',
-			content
+			content,
+			time: nowTime()
 		})
 		inputContent.value = ''
 		isLoading.value = true
@@ -381,6 +403,7 @@
 					role: 'system',
 					loading: false,
 					content: reply,
+					time: nowTime()
 				}
 				// 行程类回复：先不落库，挂上待确认标记与计划数据，等用户点「添加到行程」
 				if (d.response_type === 'itinerary' && d.needs_save) {
@@ -403,7 +426,8 @@
 				messages.value[loadingIdx] = {
 					role: 'system',
 					loading: false,
-					content: res.data.message || 'AI 服务暂时不可用，请稍后重试'
+					content: res.data.message || 'AI 服务暂时不可用，请稍后重试',
+					time: nowTime()
 				}
 			}
 			scrollToBottom()
@@ -411,7 +435,8 @@
 			messages.value[loadingIdx] = {
 				role: 'system',
 				loading: false,
-				content: '请求超时或网络异常，请重试'
+				content: '请求超时或网络异常，请重试',
+				time: nowTime()
 			}
 		} finally {
 			isLoading.value = false
@@ -483,12 +508,15 @@
 	// 处理语音接口返回：展示识别文本(用户气泡) + AI 回复，并自动朗读(H5)
 	const handleVoiceResult = (res) => {
 		if (res && res.statusCode === 200 && res.data && res.data.code === 200) {
+			// 语音对话同样视为新一轮对话，自动废弃上一轮未处理的行程确认
+			discardPendingItineraries()
 			const d = res.data.data || {}
 			const recognized = d.recognized_text || ''
 			// 用户气泡：识别出的语音文本
 			messages.value.push({
 				role: 'user',
-				content: recognized || '（未识别到内容）'
+				content: recognized || '（未识别到内容）',
+				time: nowTime()
 			})
 			// AI 加载占位
 			const loadingIdx = messages.value.push({
@@ -512,7 +540,8 @@
 			messages.value[loadingIdx] = {
 				role: 'system',
 				loading: false,
-				content: reply
+				content: reply,
+				time: nowTime()
 			}
 			// 行程类回复：挂上待确认标记与计划数据，等用户点「添加到行程」
 			if (d.response_type === 'itinerary' && d.needs_save) {
@@ -738,35 +767,52 @@
 		flex: 1;
 		padding: 28rpx 20rpx;
 		overflow-y: auto;
+		overflow-x: hidden;
+		width: 100%;
+		box-sizing: border-box;
 	}
 
 	.msg-item {
 		display: flex;
+		flex-direction: column;
+		width: 100%;
+		max-width: 100%;
 		margin-bottom: 28rpx;
 		align-items: flex-start;
 	}
 
 	.msg-item.ai {
-		justify-content: flex-start;
+		align-items: flex-start;
 	}
 
 	.msg-item.user {
-		justify-content: flex-end;
+		align-items: flex-end;
 		margin-right: 8rpx;
 	}
 
+	.msg-time {
+		margin-top: 8rpx;
+		font-size: 22rpx;
+		color: $text-3;
+		padding: 0 8rpx;
+		flex-shrink: 0;
+	}
+
 	.msg-content {
-		max-width: 72%;
+		max-width: 80%;
+		min-width: 0;
+		box-sizing: border-box;
 		padding: 24rpx 26rpx;
 		border-radius: 24rpx;
 		font-size: 28rpx;
 		line-height: 1.6;
 		box-shadow: 0 4rpx 16rpx rgba(15, 23, 42, 0.06);
-		width: fit-content;
+		word-break: break-word;
+		overflow-wrap: anywhere;
 	}
 
 	.ai .msg-content {
-		background: #fff;
+		background: #e5e5e5;
 		color: $text-1;
 		border-top-left-radius: 6rpx;
 		min-width: 120rpx;

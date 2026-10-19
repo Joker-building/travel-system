@@ -2,11 +2,9 @@ import {
 	getToken
 } from '@/utils/auth'
 import {
-	API_CONFIG
+	API_CONFIG,
+	getApiBaseUrl
 } from '@/utils/config'
-
-// 设置基础URL - 从配置文件中获取
-const BASE_URL = API_CONFIG.BASE_URL;
 
 // 请求超时时间 - 从配置文件中获取
 const TIMEOUT = API_CONFIG.TIMEOUT;
@@ -239,13 +237,14 @@ function request(options) {
 	// 构造完整URL
 	let url = options.url;
 
-	// 如果不是以http开头的完整URL，添加BASE_URL
+	// 如果不是以http开头的完整URL，添加BASE_URL（运行时解析，支持多机/真机调试）
 	if (!url.startsWith('http')) {
+		const baseUrl = getApiBaseUrl();
 		// 处理有无前导斜杠的情况
 		if (url.startsWith('/')) {
-			url = BASE_URL + url;
+			url = baseUrl + url;
 		} else {
-			url = BASE_URL + '/' + url;
+			url = baseUrl + '/' + url;
 		}
 	}
 

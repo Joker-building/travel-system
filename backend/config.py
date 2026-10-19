@@ -45,6 +45,49 @@ class Settings:
     )
     DEEPSEEK_MODEL: str = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 
+    # ===== 纯 Langchain + pgvector（RAG 检索层）配置 =====
+    # 总开关：False 时完全走原逻辑，保证已完成的工程不受任何影响（默认关闭）
+    USE_RAG: bool = os.getenv("USE_RAG", "False").lower() == "true"
+
+    # 意图路由总开关：开启后用 LLM 三意图分类（daily_qa / knowledge / plan）决定
+    # 是否使用知识库（仅 knowledge 进 RAG，daily_qa 大模型直答，plan 走行程规划）；
+    # 关闭时回退旧的二元逻辑（非 plan 全部进 RAG），保证可灰度、可回滚（默认开启）。
+    INTENT_ROUTER_ENABLED: bool = os.getenv("INTENT_ROUTER_ENABLED", "True").lower() == "true"
+
+    # Embedding 后端：默认 ollama（本机已用 Ollama 部署 bge-m3，ollama list 可见
+    # bge-m3:latest，维度 1024；纯本地、零联网，且无需 sentence-transformers/torch）。
+    # 如需改回本地 sentence-transformers，设 RAG_EMBED_BACKEND=hf 并安装
+    # langchain-huggingface + sentence-transformers。
+    RAG_EMBED_BACKEND: str = os.getenv("RAG_EMBED_BACKEND", "ollama")
+    # HF 模型名（仅 backend=hf 时生效）
+    RAG_EMBED_MODEL: str = os.getenv("RAG_EMBED_MODEL", "BAAI/bge-m3")
+    # Ollama 模型名与地址（backend=ollama 时生效）
+    RAG_OLLAMA_MODEL: str = os.getenv("RAG_OLLAMA_MODEL", "bge-m3")
+    RAG_OLLAMA_BASE_URL: str = os.getenv("RAG_OLLAMA_BASE_URL", "http://localhost:11434")
+
+    # 每次语义检索召回的候选条数
+    RAG_TOP_K: int = int(os.getenv("RAG_TOP_K", "5"))
+
+    # PostgreSQL / pgvector 连接（本机已安装 PostgreSQL 17，pgvector 扩展已手动启用）
+    # 连接目标：本机 PostgreSQL @ localhost:5432，库 vector_db，超级用户 postgres
+    RAG_PG_HOST: str = os.getenv("RAG_PG_HOST", "localhost")
+    RAG_PG_PORT: int = int(os.getenv("RAG_PG_PORT", "5432"))
+    RAG_PG_USER: str = os.getenv("RAG_PG_USER", "postgres")
+    RAG_PG_PASSWORD: str = os.getenv("RAG_PG_PASSWORD", "123456")
+    RAG_PG_DB: str = os.getenv("RAG_PG_DB", "vector_db")
+    # Langchain PGVector 在 vector_db 内使用的集合名（自动建表 langchain_pg_collection / langchain_pg_embedding）
+    # 统一集合：scenic_spot 景点本体 + knowledge_doc 知识库语料，靠 doc_type 元数据区分。
+    RAG_PG_COLLECTION: str = os.getenv("RAG_PG_COLLECTION", "travel_kb")
+
+    @property
+    def RAG_PG_CONNECTION_STRING(self) -> str:
+        # langchain-postgres（1.x 中 PGVector 的归属包）使用 psycopg3 驱动，
+        # 连接串必须是 postgresql+psycopg://...（注意：不是 psycopg2）
+        return (
+            f"postgresql+psycopg://{self.RAG_PG_USER}:{self.RAG_PG_PASSWORD}"
+            f"@{self.RAG_PG_HOST}:{self.RAG_PG_PORT}/{self.RAG_PG_DB}"
+        )
+
     # 百度语音 API（语音识别 STT 备用配置；当前 Vosk 本地识别无需 Key）
     BAIDU_ASR_API_KEY: str = os.getenv("BAIDU_ASR_API_KEY", "")
     BAIDU_ASR_SECRET_KEY: str = os.getenv("BAIDU_ASR_SECRET_KEY", "")

@@ -117,10 +117,13 @@
 	import {
 		getToken
 	} from '@/utils/auth'
+	import {
+		getApiBaseUrl
+	} from '@/utils/config'
 	export default {
 		data() {
 			return {
-				baseUrl: 'http://127.0.0.1:8000',
+				baseUrl: getApiBaseUrl(),
 
 				isSubmitting: false,
 				originalUserInfo: null,

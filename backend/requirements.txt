@@ -1,6 +1,25 @@
+# ============================================================
+# travel-system 后端 · 核心依赖清单（requirements.txt）
+# 安装：pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+#
+# 依赖分层说明（2026-10-14 审计结论，逐条比对 .venv 与 requirements.frozen.txt）：
+#   1) 本文件 = 核心运行时依赖，仅覆盖「非 RAG」业务代码真正 import 的第三方包：
+#      fastapi / uvicorn / sqlalchemy / pymysql / cryptography /
+#      pydantic / pydantic-settings / python-jose / passlib / python-multipart /
+#      httpx / python-dotenv / aiofiles
+#      —— 上述每一项均已与 .venv / requirements.frozen.txt 实际安装版本核对一致。
+#   2) RAG 检索层依赖（langchain 1.x 栈 + pgvector + psycopg3）单独维护在
+#      requirements_rag.txt，不污染本文件。当前 .venv 已同时安装两套依赖。
+#   3) 语音识别依赖 vosk 以本地 vendored 形式放在 libs/vosk，不进 pip 依赖；
+#      wave / struct 等为 Python 标准库，无需安装。
+#   4) 历史版本曾计划引入 PDF 解析（extract_pdf.py，依赖 pdfplumber/PyMuPDF/
+#      pypdf/PyPDF2/pillow），但该模块已从项目删除，故本清单不收录这 5 个包。
+#      如需恢复 PDF 解析功能，应连模块带依赖一并补回，不要只加依赖。
+# ============================================================
+
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
-sqlalchemy==2.0.36
+sqlalchemy==2.0.41   # 须 >=2.0.37：2.0.36 在 uvicorn 热重载下 C 扩展循环导入崩溃（已知 bug，2.0.37+ 已修复）
 pymysql==1.1.1
 cryptography==44.0.0
 pydantic==2.10.4

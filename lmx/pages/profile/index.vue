@@ -119,12 +119,15 @@
 		clearLoginState,
 		getToken
 	} from '@/utils/auth';
+	import {
+		getApiBaseUrl
+	} from '@/utils/config';
 
 	export default {
 		data() {
 			return {
-				baseUrl: 'http://127.0.0.1:8000',
-				currentTab: 'profile',
+			baseUrl: getApiBaseUrl(),
+			currentTab: 'profile',
 				loading: false,
 				errorMsg: '',
 				userInfo: {

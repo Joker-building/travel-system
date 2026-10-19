@@ -1,6 +1,5 @@
 import { getToken } from '@/utils/auth'
 import request from '@/utils/request'
-import { API_CONFIG } from '@/utils/config'
 
 /**
  * 发送聊天消息并接收响应

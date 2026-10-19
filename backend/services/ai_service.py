@@ -81,7 +81,10 @@ ITINERARY_TOOL = {
     }
 }
 
-SYSTEM_PROMPT_PLAN_TOOL = """你是专业的旅游行程规划助手。用户会描述出行需求（目的地城市、游玩天数、预算、人数、偏好等）。默认必须调用 create_itinerary 工具来返回完整行程方案，不要直接输出文本或 JSON，也不要返回 question_answer 类型。若用户需求缺少必要信息（如目的地、天数）或明显无法生成行程，则先简短追问缺失信息，不得编造行程。若预算、人数或偏好未提供，可在行程中做合理假设并明确标注，或在关键信息缺失时先追问。
+SYSTEM_PROMPT_PLAN_TOOL = """你是专业的旅游行程规划助手。用户会描述出行需求（目的地城市、游玩天数、预算、人数、偏好等）。
+默认必须调用 create_itinerary 工具来返回完整行程方案，不要直接输出文本或 JSON，也不要返回 question_answer 类型。
+若用户需求缺少必要信息（如目的地、天数）或明显无法生成行程，则先简短追问缺失信息，不得编造行程。
+若预算、人数或偏好未提供，可在行程中做合理假设并明确标注，或在关键信息缺失时先追问。
 **JSON/参数格式硬性要求**：所有字符串值（尤其是 narrative）内部严禁出现未转义的英文双引号——引用词语一律用中文引号「」；若必须用英文双引号必须写成 \\" 转义，否则会破坏 JSON 导致回复截断。
 
 【城市必须严格匹配】行程的 dest_city 以及每一个景点的 city 都必须严格等于用户在消息中明确提到的目的地城市，绝不可自行替换为其他城市（例如用户说"三亚"就必须生成"三亚"，不得生成"武汉""广州"等其他城市）。trip_name 与 chat_title 中的城市也必须与用户指定城市一致。
@@ -191,7 +194,8 @@ class AIService:
     """AI 服务"""
 
     @staticmethod
-    async def call_deepseek_api(messages: list, tools: list = None) -> dict:
+    async def call_deepseek_api(messages: list, tools: list = None,
+                                temperature: float = None) -> dict:
         """调用 DeepSeek API；tools 非空时走 function calling，返回完整响应 dict"""
         headers = {
             "Authorization": f"Bearer {settings.DEEPSEEK_API_KEY}",
@@ -200,7 +204,7 @@ class AIService:
         payload = {
             "model": settings.DEEPSEEK_MODEL,
             "messages": messages,
-            "temperature": 0.3,
+            "temperature": temperature if temperature is not None else 0.3,
             "max_tokens": 8192,
             "stream": False,
         }
@@ -430,22 +434,36 @@ class AIService:
                 break
         if not last_ai:
             return False
+        # 仅当 AI 上一条是"明确的规划提议问句"才承接，避免两类误触发：
+        #  1) AI 在普通推荐/叙事里顺带提到"帮你规划"（如"我可以帮你规划当天路线"），
+        #     导致后续用户任何"好的/需要"都被误判为行程确认，硬生成 3 日游；
+        #  2) 与用户真实意图无关的上下文被强行带入行程规划分支。
+        # 要求规划信号词之后短距离内出现问号（？/?）或"吗"，即确属提议式提问。
         _plan_signals = [
             "需要我帮你规划", "需要我为您规划", "需要我为你规划", "帮你规划一份",
             "要我帮你规划", "帮你规划", "规划一份", "需要我帮你做一份", "需要我帮你制定",
         ]
-        return any(s in last_ai for s in _plan_signals)
+        for s in _plan_signals:
+            idx = last_ai.find(s)
+            if idx != -1:
+                tail = last_ai[idx: idx + len(s) + 18]
+                if "？" in tail or "?" in tail or "吗" in tail:
+                    return True
+        return False
 
     @staticmethod
     def _extract_city_from_history(history: list) -> Optional[str]:
         """从历史消息里找最近一次提到的目的地城市，用于『承接上文规划』时继承目的地。
+        仅看最近 10 条，避免把很久以前、已切换话题的旧城市误继承为当前目的地
+        （如先聊北京、再聊齐齐哈尔后说『需要』，不应继承成北京）。
         优先取最近一条含城市的 user 消息；兜底取最近一条 assistant 消息里最后一个提到的白名单城市。"""
-        for msg in reversed(history):
+        recent = list(history)[-10:]
+        for msg in reversed(recent):
             if getattr(msg, "role", None) == "user":
                 c = AIService._extract_city(msg.content or "")
                 if c:
                     return c
-        for msg in reversed(history):
+        for msg in reversed(recent):
             if getattr(msg, "role", None) == "assistant":
                 cs = AIService._extract_cities(msg.content or "")
                 if cs:
@@ -471,6 +489,11 @@ class AIService:
         "嘉峪关", "额济纳", "海螺沟", "日喀则", "林芝", "香格里拉", "泸沽湖", "喀纳斯",
         "禾木", "布尔津", "阳朔", "北海", "涠洲岛", "鼓浪屿", "莫干山", "千岛湖",
         "嵊泗", "东极岛", "南浔",
+        # 东北及其他增补（旅游高频但易被遗漏的地级市 / 区）
+        "齐齐哈尔", "牡丹江", "佳木斯", "大庆", "漠河", "延吉", "图们", "抚远",
+        "大同", "包头", "鄂尔多斯", "南通", "扬州", "镇江", "泰州", "嘉兴",
+        "绍兴", "金华", "台州", "芜湖", "潍坊", "临沂", "唐山", "保定",
+        "张家口", "邯郸", "赣州", "柳州", "遵义",
     ]
 
     @staticmethod
@@ -676,6 +699,9 @@ class AIService:
     @staticmethod
     async def chat(db: Session, user_id: int, session_id: Optional[int], message: str) -> dict:
         """AI 对话主入口"""
+        import time
+        _t_total = time.perf_counter()
+        _t_prev = _t_total
         # 创建或获取会话
         if not session_id:
             session = ChatSession(
@@ -710,15 +736,46 @@ class AIService:
             .all()
         )
 
-        # 检测『承接上文规划』意图：用户对上一轮 AI 末尾的规划提议
-        # （如『需要我帮你规划一份具体的行程吗？』）用极简肯定词（需要/好的/要/可以）回应，
-        # 应触发出行规划分支，并把目的地城市从历史继承。
-        plan_continuer = bool(history_messages) and AIService._is_plan_continuer(message, history_messages)
-        is_plan = AIService._is_plan_intent(message) or plan_continuer
+        _t_now = time.perf_counter()
+        print(f"[AI] 阶段耗时 | 会话与历史加载: {(_t_now - _t_prev) * 1000:.1f}ms | 累计: {(_t_now - _t_total) * 1000:.1f}ms", flush=True)
+        _t_prev = _t_now
+
+        # ===== 三意图分类：daily_qa / knowledge / plan（LLM 分类 + 规则兜底）=====
+        # classify_intent 用 DeepSeek 判断意图，并区分 knowledge 子主题
+        # （scenic 景点 / food 美食 / culture 人文），用于细分知识库检索。
+        # 仅 knowledge 走 RAG；daily_qa 大模型直答（不进知识库）；plan 走行程规划。
+        _intent_result = await AIService.classify_intent(message, history_messages)
+        intent = _intent_result.get("intent", "knowledge")
+        subtopic = _intent_result.get("subtopic", "none")
+        is_plan = (intent == "plan")
+        # 日志可见性：直接打印三意图分类的真实结果与子主题，便于验证"是否走知识库"
+        print(f"[AI] 意图分类结果: intent={intent} subtopic={subtopic}", flush=True)
+        # 保护：规划意图但消息与历史均无目的地城市时，降级为日常问答（反问城市），
+        # 避免 LLM 在无上下文时硬生成默认行程（历史 bug）。
+        if is_plan:
+            _cities = AIService._extract_cities(message) or (
+                [AIService._extract_city_from_history(history_messages)]
+                if history_messages else [])
+            _cities = [c for c in _cities if c]
+            if not _cities:
+                is_plan = False
+                intent = "daily_qa"
+                subtopic = "none"
+
+        _t_now = time.perf_counter()
+        print(f"[AI] 阶段耗时 | 意图识别: {(_t_now - _t_prev) * 1000:.1f}ms | 累计: {(_t_now - _t_total) * 1000:.1f}ms", flush=True)
+        _t_prev = _t_now
+
+        # ===== RAG 开关：QA 分支委托给 pgvector 检索 + Langchain 编排 =====
+        # USE_RAG 默认为 False；开启后仅 knowledge 意图走 RAG 路径（按 subtopic 细分检索），
+        # daily_qa 与 plan 不进知识库，原工程行为完全不受影响。
+        if settings.USE_RAG and intent == "knowledge":
+            print(f"[AI] chat 总耗时(走RAG): {(time.perf_counter() - _t_total) * 1000:.1f}ms", flush=True)
+            return await AIService.rag_qa(db, user_id, session_id, message, history_messages, subtopic=subtopic)
 
         # 构建发送给 DeepSeek 的 messages
         # 规划意图使用简短的"必须调用工具"提示（function calling 强制结构化），否则用通用 prompt
-        if AIService._is_plan_intent(message) or plan_continuer:
+        if is_plan:
             system_prompt = SYSTEM_PROMPT_PLAN_TOOL
             # 确定性城市注入：提取用户消息中所有提到的城市（多城市支持）。
             # - 单城市：保持原有的"强约束"（强制 dest_city 与所有景点 city 等于该城市）
@@ -726,7 +783,7 @@ class AIService:
             #   其它城市景点在其各自的 city 字段写明所属城市，narrative 每天标注所在城市
             cities = AIService._extract_cities(message)
             # 承接上文规划：用户消息（如『需要』）不含城市，从历史继承上一轮的目的地城市
-            if not cities and plan_continuer:
+            if not cities and is_plan:
                 hist_city = AIService._extract_city_from_history(history_messages)
                 if hist_city:
                     cities = [hist_city]
@@ -828,6 +885,9 @@ class AIService:
                                 )
                 except Exception as e:
                     print(f"QA 天气获取失败: {e}", flush=True)
+        _t_now = time.perf_counter()
+        print(f"[AI] 阶段耗时 | 提示构建与天气注入: {(_t_now - _t_prev) * 1000:.1f}ms | 累计: {(_t_now - _t_total) * 1000:.1f}ms", flush=True)
+        _t_prev = _t_now
         messages_for_api = [{"role": "system", "content": system_prompt}]
         # 规划意图不携带历史消息：每次行程规划是独立任务，
         # 历史中其他城市的 narrative 会干扰 DeepSeek 生成正确的回复
@@ -840,7 +900,7 @@ class AIService:
         # QA 分支"自适应历史"：仅当历史与当前话题无城市冲突时才携带，避免污染。
         # 同时记录 include_history 标志，供下方方案 B 的短句上下文补全复用。
         include_history = False
-        if not (AIService._is_plan_intent(message) or plan_continuer):
+        if not is_plan:
             if history_messages:
                 current_city = AIService._extract_city(message)
                 if not AIService._history_has_city_conflict(history_messages, current_city):
@@ -855,14 +915,16 @@ class AIService:
             effective_message = AIService._rewrite_short_answer(message, history_messages)
         messages_for_api.append({"role": "user", "content": effective_message})
 
+        _t_now = time.perf_counter()
+        print(f"[AI] 阶段耗时 | 消息拼装: {(_t_now - _t_prev) * 1000:.1f}ms | 累计: {(_t_now - _t_total) * 1000:.1f}ms", flush=True)
+        _t_prev = _t_now
+
         # 调用 DeepSeek API（规划意图走 function calling，强制结构化行程输出）
-        import time
         _ds_start = time.time()
         _history_count = len(history_messages or [])
-        _intent = "plan" if (AIService._is_plan_intent(message) or plan_continuer) else "qa"
-        print(f"[AI] 调用 DeepSeek: intent={_intent} history_msgs={_history_count} total_msgs={len(messages_for_api)} message='{message[:30]}{'...' if len(message)>30 else ''}'", flush=True)
+        print(f"[AI] 调用 DeepSeek: intent={intent} subtopic={subtopic} is_plan={is_plan} history_msgs={_history_count} total_msgs={len(messages_for_api)} message='{message[:30]}{'...' if len(message)>30 else ''}'", flush=True)
         try:
-            if AIService._is_plan_intent(message) or plan_continuer:
+            if is_plan:
                 raw = await AIService.call_deepseek_api(messages_for_api, tools=[ITINERARY_TOOL])
                 # 结构校验：DeepSeek 偶发返回异常结构（限流/安全过滤/网络抖动）
                 if not isinstance(raw, dict) or not raw.get("choices"):
@@ -1035,6 +1097,10 @@ class AIService:
         # 更新会话时间
         session.update_time = datetime.now()
         db.commit()
+
+        _t_now = time.perf_counter()
+        print(f"[AI] 阶段耗时 | 回复落库: {(_t_now - _t_prev) * 1000:.1f}ms | 累计: {(_t_now - _t_total) * 1000:.1f}ms", flush=True)
+        print(f"[AI] chat 总耗时: {(_t_now - _t_total) * 1000:.1f}ms", flush=True)
 
         if response_type == "itinerary":
             # 不再自动落库：仅返回计划数据，标记为待确认（needs_save）。
@@ -1237,6 +1303,9 @@ class AIService:
     @staticmethod
     async def search_scenic(db: Session, keyword: str, city: str) -> dict:
         """AI 搜索景点（高德式）：返回多个候选景点卡片列表"""
+        # ===== RAG 开关：用 pgvector 语义检索替代"模型编造 POI" =====
+        if settings.USE_RAG:
+            return await AIService.search_scenic_rag(db, keyword, city)
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT_SCENIC_SEARCH_LIST},
             {
@@ -1341,3 +1410,197 @@ class AIService:
             }
         except Exception as e:
             return {"success": False, "message": f"AI获取详情失败: {str(e)}"}
+
+    # ===================== RAG 增强方法（纯 Langchain + pgvector，默认不启用） =====================
+
+    @staticmethod
+    def _get_scenic_store() -> "ScenicPGVectorStore":
+        """返回景点 PGVector 检索封装。"""
+        from services.rag.vector_store import ScenicPGVectorStore
+        return ScenicPGVectorStore()
+
+    @staticmethod
+    async def rag_qa(db: Session, user_id: int, session_id: int, message: str,
+                     history_messages: list = None, subtopic: str = "none") -> dict:
+        """RAG 的 QA 主入口：pgvector 语义检索 + Langchain 编排。
+        返回结构与原 chat() QA 分支一致，便于前端无感切换。
+        数据流：scenic_spot 表 → PGVector 索引（Docker 内）→ Langchain retriever
+               → LCEL 问答链（检索上下文 + DeepSeek）→ 自然语言回答。
+        """
+        from services.langchain_layer.orchestrator import build_qa_chain
+
+        store = AIService._get_scenic_store()
+        # 按 knowledge 子主题细分检索：scenic 只召回景点本体；food/culture 在
+        # topic/city/guide 内进一步按 subtype 精准分离（排除对方与 itinerary/faq 噪音）；
+        # 无子主题则召回全部（兜底）。
+        filt = AIService._subtopic_to_filter(subtopic)
+        doc_types = filt.get("doc_types")
+        subtypes = filt.get("subtypes")
+        if doc_types or subtypes:
+            retriever = store.get_retriever(doc_types=doc_types, subtypes=subtypes)
+        else:
+            retriever = store.get_retriever()
+
+        # 压缩历史对话进问题，保留多轮上下文（简单做法；后续可换向量记忆）
+        history_text = ""
+        if history_messages:
+            history_text = "\n".join(
+                f"{'用户' if m.role == 'user' else '助手'}：{m.content}"
+                for m in history_messages
+            )
+        question = (f"历史对话：\n{history_text}\n\n当前问题：{message}"
+                    if history_text else message)
+
+        # Langchain 编排：检索 → 拼上下文 → DeepSeek → 解析
+        chain = build_qa_chain(retriever)
+        answer = chain.invoke(question)
+
+        # 落库：保存 AI 回复 + 更新会话时间（与原 chat() 保持一致）
+        session = db.query(ChatSession).filter(ChatSession.id == session_id).first()
+        chat_title = session.session_title if session else message[:20]
+        ai_msg = ChatMessage(session_id=session_id, role="assistant",
+                             content=answer, create_time=datetime.now())
+        db.add(ai_msg)
+        if session:
+            session.update_time = datetime.now()
+        db.commit()
+
+        return {
+            "success": True,
+            "response_type": "question_answer",
+            "session_id": session_id,
+            "chat_title": chat_title,
+            "answer": answer,
+        }
+
+    @staticmethod
+    async def search_scenic_rag(db: Session, keyword: str, city: str) -> dict:
+        """RAG 版景点搜索：用 pgvector 语义检索真实景点库，
+        替代原 search_scenic 里「模型凭记忆编造 POI」的做法。"""
+        store = AIService._get_scenic_store()
+        # 只召回景点本体（doc_type=scenic_spot），避免把攻略 / FAQ 误当 POI 返回
+        hits = store.similarity_search(keyword, city=city, doc_type="scenic_spot",
+                                      k=settings.RAG_TOP_K)
+        results = []
+        for doc, _score in hits:
+            meta = doc.metadata or {}
+            spot_id = meta.get("spot_id")
+            scenic = (db.query(ScenicSpot).filter(ScenicSpot.id == spot_id).first()
+                      if spot_id else None)
+            # 高德式卡片：以检索命中的真实景点为准，不再让模型虚构字段
+            results.append(AIService._build_scenic_card(scenic, {
+                "name": meta.get("name", ""),
+                "city": meta.get("city", ""),
+                "category": meta.get("category", ""),
+                "address": meta.get("address", ""),
+                "price": meta.get("price", 0),
+                "rating": meta.get("rating", 0),
+                "tags": meta.get("tags", ""),
+                "introduction": doc.page_content,
+            }))
+        return {
+            "success": True,
+            "keyword": keyword,
+            "city": city,
+            "total": len(results),
+            "results": results,
+            "note": "结果来自 pgvector 向量检索的真实景点库，非模型生成。",
+        }
+
+    # ===================== 三意图分类（daily_qa / knowledge / plan） =====================
+
+    # knowledge 子主题 → 向量库检索条件（细分到 subtype，food/culture 精准分离）
+    # - scenic 景点：只召回真实景点本体（scenic_spot），最精准，不混入任何知识块。
+    # - food 美食：召回 topic/city/guide 中 subtype=food 的块（美食专题 / 城市美食段 /
+    #   攻略美食地图），排除 culture（人文）与 itinerary/faq 噪音。
+    # - culture 人文：召回 topic/city/guide 中 subtype=culture 的块（历史古迹专题 /
+    #   城市底蕴段 / 攻略人文），排除 food（美食）与 itinerary/faq 噪音。
+    # - none：不限定 subtype，召回全部知识块（兜底，等价于原『非 plan 全进 RAG』）。
+    _SUBTOPIC_FILTER = {
+        "scenic":  {"doc_types": ["scenic_spot"], "subtypes": None},
+        "food":    {"doc_types": ["topic", "city", "guide"], "subtypes": ["food"]},
+        "culture": {"doc_types": ["topic", "city", "guide"], "subtypes": ["culture"]},
+        "none":    {"doc_types": None, "subtypes": None},
+    }
+
+    @staticmethod
+    def _subtopic_to_filter(subtopic: str) -> dict:
+        """把 knowledge 子主题映射为向量库检索条件（doc_types + subtypes 白名单）。
+        未知/无子主题回退为「none」（召回全部），保证不漏检。"""
+        return AIService._SUBTOPIC_FILTER.get(subtopic, AIService._SUBTOPIC_FILTER["none"])
+
+    @staticmethod
+    def _rule_based_intent(message: str, history: list) -> dict:
+        """规则兜底意图判断（关闭 INTENT_ROUTER_ENABLED 或 LLM 分类失败时回退）。
+
+        沿用原有二元逻辑：plan 由确定性规则守住（_is_plan_intent + _is_plan_continuer），
+        非 plan 一律当 knowledge（与原『非 plan 全部进 RAG』行为一致，安全兼容）。
+        """
+        is_plan = AIService._is_plan_intent(message) or (
+            bool(history) and AIService._is_plan_continuer(message, history))
+        return {
+            "intent": "plan" if is_plan else "knowledge",
+            "subtopic": "none",
+        }
+
+    @staticmethod
+    async def classify_intent(message: str, history: list = None) -> dict:
+        """纯 LLM 三意图分类：daily_qa / knowledge / plan，并区分 knowledge 子主题。
+
+        返回 {"intent": ..., "subtopic": ...}。
+        - intent=plan       → 走行程规划（function calling）
+        - intent=knowledge  → 走 RAG 知识库（按 subtopic 细分检索）
+        - intent=daily_qa   → 大模型直答，不进知识库
+        关闭开关或 LLM 异常时回退 _rule_based_intent，保证不崩、且兼容原工程行为。
+        """
+        # 开关关闭：直接回退旧二元逻辑（非 plan 全部进 RAG），不影响现有行为
+        if not settings.INTENT_ROUTER_ENABLED:
+            return AIService._rule_based_intent(message, history or [])
+
+        _sys = (
+            "你是旅游对话的意图分类器。只输出 JSON，不要输出任何其他内容。\n"
+            "根据用户当前消息与最近对话历史，判断意图 intent 与知识子主题 subtopic：\n\n"
+            "intent 三选一：\n"
+            "- \"daily_qa\"：日常闲聊、问候、情感倾诉、与旅游无关的通用问答、让助手自我介绍等。\n"
+            "- \"knowledge\"：关于具体景点介绍、城市概况、美食、人文历史、文化风俗、攻略玩法等"
+            "旅游知识咨询（例：\"故宫的历史\"\"北京有什么好吃的\"\"介绍西湖\"\"西安人文\"）。\n"
+            "- \"plan\"：用户核心诉求是规划/定制/安排一次旅行行程（例：\"规划武汉3日游\""
+            "\"帮我安排北京行程\"\"出一份攻略\"），也包括对上一轮 AI 规划提议的简短肯定回应（如\"需要\"\"好的，安排\"）。\n\n"
+            "subtopic 四选一（仅当 intent=\"knowledge\" 时有意义，否则 \"none\"）：\n"
+            "- \"scenic\"：具体景点/景区介绍（含门票、看点、玩法）\n"
+            "- \"food\"：美食/餐饮/小吃/特色吃食\n"
+            "- \"culture\"：人文历史/文化/风俗/古迹/博物馆/城市底蕴\n"
+            "- \"none\"：其他旅游知识或不确定\n\n"
+            "判定要点：\n"
+            "- 若用户核心诉求是规划行程（即使顺带问了某个景点），优先判 \"plan\"。\n"
+            "- 若核心是了解某景点/美食/人文知识而非规划，判 \"knowledge\"。\n"
+            "- 闲聊、问候、非旅游问题判 \"daily_qa\"。\n\n"
+            "严格输出 JSON："
+            "{\"intent\":\"daily_qa|knowledge|plan\",\"subtopic\":\"scenic|food|culture|none\",\"reason\":\"简短理由\"}"
+        )
+        history_text = ""
+        if history:
+            history_text = "\n".join(
+                f"{'用户' if m.role == 'user' else '助手'}：{m.content}"
+                for m in history
+            )
+        _user = (
+            f"最近对话历史：\n{history_text or '（无）'}\n\n当前用户消息：{message}"
+        )
+        try:
+            raw = await AIService.call_deepseek_api(
+                [{"role": "system", "content": _sys},
+                 {"role": "user", "content": _user}],
+                temperature=0.1,
+            )
+            data = AIService.parse_json_response(AIService._extract_content(raw))
+            intent = data.get("intent")
+            if intent not in ("daily_qa", "knowledge", "plan"):
+                intent = "knowledge"  # 非法意图兜底为 knowledge（原非 plan 行为）
+            subtopic = data.get("subtopic", "none")
+            if subtopic not in ("scenic", "food", "culture", "none"):
+                subtopic = "none"
+            return {"intent": intent, "subtopic": subtopic}
+        except Exception as e:
+            print(f"[意图分类] LLM 分类失败，回退规则: {e}", flush=True)
+            return AIService._rule_based_intent(message, history or [])
