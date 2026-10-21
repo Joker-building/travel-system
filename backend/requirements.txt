@@ -9,7 +9,7 @@
 #      httpx / python-dotenv / aiofiles
 #      —— 上述每一项均已与 .venv / requirements.frozen.txt 实际安装版本核对一致。
 #   2) Langchain 接入层（非 RAG）：仅作为 DeepSeek 的 LLM 封装（ChatOpenAI）与
-#      行程规划 tool-calling 智能体（orchestrator.run_itinerary_agent）的编排层，
+#      顶层对话编排（orchestrator.build_chat_chain：LCEL 多链 + 嵌套 + 并发）的接入层，
 #      不含任何向量检索 / 知识库逻辑。依赖 langchain / langchain-openai /
 #      langchain-core（详见下方清单）。RAG 专属的 langchain-postgres /
 #      langchain-ollama / pgvector / psycopg 已卸载，本清单不收录。

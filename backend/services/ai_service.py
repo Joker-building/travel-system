@@ -19,7 +19,6 @@ from models.chat import ChatSession, ChatMessage
 from services.langchain_layer import (
     get_chat_model,
     to_langchain_messages,
-    run_itinerary_agent,
 )
 
 

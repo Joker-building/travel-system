@@ -28,7 +28,7 @@
 | 数据库驱动 | PyMySQL | 1.1.1 | MySQL 连接 |
 | 数据库 | MySQL | 84（本地 3306） | 业务主库 `travel_system` |
 | 大模型 | DeepSeek | `deepseek-chat`（OpenAI 兼容 `/v1/chat/completions`） | 对话、规划、详情生成 |
-| AI 编排层 | Langchain | langchain 1.4.5 / langchain-openai 1.7.1 | ChatOpenAI 封装 DeepSeek + 行程规划 tool-calling 智能体（非 RAG） |
+| AI 编排层 | Langchain | langchain 1.4.5 / langchain-openai 1.7.1 | LCEL 多链 + 嵌套 + 并发（build_chat_chain 顶层编排）封装 DeepSeek（非 RAG） |
 | 认证 | python-jose + passlib(bcrypt) | HS256 JWT | 用户登录态、接口鉴权 |
 | HTTP 客户端 | httpx | 0.28.1 | 异步调用 DeepSeek / 天气 / 代理 |
 | 配置 | pydantic-settings + python-dotenv | — | 环境变量管理 |
@@ -59,7 +59,9 @@ backend/
 │   ├── ai_service.py            # ★ AI 核心：经 langchain_layer 调用 DeepSeek、意图路由、行程规划
 │   ├── langchain_layer/         # Langchain 接入层（非 RAG）
 │   │   ├── llm.py               # ChatOpenAI 封装 DeepSeek（推导 base_url）
-│   │   └── orchestrator.py      # to_langchain_messages + run_itinerary_agent 智能体
+│   │   ├── messages.py          # {role,content} → Langchain 消息对象
+│   │   ├── orchestrator.py      # build_chat_chain 顶层对话链（LCEL 多链+嵌套+并发）
+│   │   └── chains/              # 子链：base / context / intent / router / plan / qa / weather / scenic_*
 │   ├── scenic_service.py        # 景点库 CRUD
 │   ├── trip_service.py          # 行程服务
 │   ├── chat_service.py          # 会话服务
@@ -93,7 +95,7 @@ backend/
 | AI 能力 | 入口 | 技术实现 | 状态 |
 |--------|------|----------|------|
 | 智能对话问答 | `POST /api/ai/chat` | DeepSeek + 意图路由 | ✅ 已落地 |
-| 行程规划 | `AIService.chat`（plan 分支） | Langchain tool-calling 智能体（run_itinerary_agent）+ 确定性约束注入 | ✅ 已落地 |
+| 行程规划 | `AIService.chat`（plan 分支） | LCEL plan_chain（bind_tools + tool_choice=required）+ 确定性约束注入 | ✅ 已落地 |
 | 景点语义搜索 | `AIService.search_scenic` | DeepSeek 生成高德式候选卡片 | ✅ 已落地 |
 | 景点详情生成 | `AIService.get_scenic_detail` | DeepSeek 生成介绍/门票/预算 | ✅ 已落地 |
 | 语音识别对话 | `/api/ai/voice/chat` | Vosk 离线 STT → `AIService.chat` | ✅ 已落地 |
@@ -108,7 +110,7 @@ backend/
 - **统一封装**：`AIService.call_deepseek_api()`（`ai_service.py`）——经 `services/langchain_layer` 的 **ChatOpenAI 接入层**调用 DeepSeek（底层仍为 OpenAI 兼容协议，base_url 由 `DEEPSEEK_API_URL` 推导），支持两种模式：
   - **结构化规划**：传入 `tools` 时走 **function calling**（`bind_tools` + `tool_choice="required"`），强制模型输出可解析 JSON；
   - **自然语言问答**：否则 `bind(response_format={"type":"json_object"})`，便于稳健解析。
-- **行程规划智能体**：`is_plan=True` 时不再直接走 `call_deepseek_api`，而改走 `orchestrator.run_itinerary_agent()`——通过 `bind_tools` 强制调用 `create_itinerary` 工具，并内置「空工具调用 → 强制重试一次」兜底。
+- **顶层对话编排（LCEL）**：`AIService.chat()` 不再手写分支，而是委托 `build_chat_chain()`（`orchestrator.py`）——`RunnableParallel({context, intent, raw}) | _assemble | router_chain | _postprocess`。其中 `intent_chain` 用 LLM 做意图分类、`router_chain`（`RunnableBranch`）按意图把请求路由到 `plan_chain`（bind_tools 强制调用 `create_itinerary`，空调用经 `with_fallbacks` 重试一次）或 `qa_chain`，最后 `_postprocess` 统一输出 `{response_type, data, error_code}`（M8）。
 - **健壮性处理**：
   - `_extract_tool_args()`：循环解包 DeepSeek 偶发的"双重 JSON 编码"参数，最多解 3 层，失败统一返回 `{}`；
   - `_extract_human_text_from_ai_raw()`：从 JSON / 双重编码 / tool_calls 中提取用户可读中文（优先级：narrative → answer → chat_title）。
@@ -123,7 +125,7 @@ backend/
 
 ### 6.3 行程规划（function calling + 确定性约束注入）
 
-`AIService.chat()` 在 `is_plan=True` 时进入规划分支，由 `services/langchain_layer/orchestrator.run_itinerary_agent()` 智能体负责工具调用，核心设计：
+`AIService.chat()` 在判定为规划意图时，由顶层链路由到 `plan_chain`（位于 `services/langchain_layer/chains/plan_chain.py`）负责工具调用，核心设计：
 
 - **强制结构化**：智能体用 `SYSTEM_PROMPT_PLAN_TOOL` 经 `bind_tools` + `tool_choice="required"` 让 DeepSeek 必须输出结构化行程 JSON（含 `dest_city`、每日景点 `city` 等字段）；空工具调用时智能体内部强制重试一次。
 - **确定性约束注入（抑制幻觉的关键）**：
@@ -152,17 +154,27 @@ backend/
 ```
                         ┌─────────────────────────────┐
    前端 / 语音           │        AIService.chat()      │
-   ───────────────────▶ │                             │
+   ───────────────────▶ │  (链外：会话/历史/硬守门)      │
                         └──────────────┬──────────────┘
-                                       │
-                       _is_plan_intent() / _is_plan_continuer()  ← 确定性规则
-                                       │
-            ┌──────────────────────────┴────────────────────┐
-            ▼                                           ▼
-      通用 QA（DeepSeek 直答）                        plan
-    + 自适应历史 + 天气注入                    Langchain tool-calling 智能体 + 约束注入
-                                              ↓
-                                              结构化行程 JSON → _process_itinerary 落库
+                                       │  build_chat_chain().ainvoke(...)
+                                       ▼
+        ┌──────────────────────────────────────────────────┐
+        │  RunnableParallel({ context, intent, raw })        │
+        │    context → context_chain（并发加载天气）          │
+        │    intent  → intent_chain（LLM 意图分类）          │
+        │    raw     → 原始输入                              │
+        │         │ _assemble（拼装 + 意图合并）             │
+        │         ▼ router_chain（RunnableBranch）           │
+        │      ┌─────────────┴─────────────┐                │
+        │      ▼                           ▼                │
+        │   plan_chain                 qa_chain             │
+        │  (bind_tools 强制              (DeepSeek 直答      │
+        │   调 create_itinerary,          + 自适应历史        │
+        │   空调用重试一次)               + 天气注入)         │
+        └──────────────┬──────────────────┬─────────────────┘
+                       ▼                  ▼
+             结构化行程 JSON        问答文本
+             → _process_itinerary  → 返回 M8
 ```
 
 ---
@@ -213,4 +225,4 @@ backend/
 1. **抑制幻觉两条线**：① 行程规划 function calling + 城市/天数确定性约束注入；② 景点搜索由 DeepSeek 生成候选卡片并落库，避免凭记忆编造 POI。
 2. **语音离线化**：Vosk 本地 STT 避免云端语音 API 的 Key 与网络依赖。
 3. **密钥隔离**：所有第三方密钥（天气/地图/翻译）仅在服务端 `config.py` 与 `.env` 保存，前端经 `/api/proxy` 代理访问。
-4. **Langchain 仅作接入 / 编排层（非 RAG）**：以 `ChatOpenAI` 封装 DeepSeek、以 `run_itinerary_agent` 智能体编排行程规划 tool-calling；**不含任何向量检索 / 知识库逻辑**，RAG 专属依赖（langchain-postgres / langchain-ollama / pgvector / psycopg）已卸载。
+4. **Langchain 仅作接入 / 编排层（非 RAG）**：以 `ChatOpenAI` 封装 DeepSeek、以 `build_chat_chain` 顶层 LCEL 链（context/intent/router/plan/qa 多链嵌套 + 并发）编排行程规划与问答；**不含任何向量检索 / 知识库逻辑**，RAG 专属依赖（langchain-postgres / langchain-ollama / pgvector / psycopg）已卸载。

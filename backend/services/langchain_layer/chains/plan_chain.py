@@ -3,7 +3,7 @@
 输入:  {"messages": [{role, content}, ...]}
 输出:  {"tool_calls": [{"name", "args", "id", "type"}, ...], "content": str}
 
-要点（延续旧 run_itinerary_agent 稳健策略，修复 M3 可观测）：
+要点（延续旧工程稳健策略「空工具调用 → 强制重试一次」，修复 M3 可观测）：
 - 主链：messages → model.bind_tools(tools, tool_choice="required") → 解析 tool_calls。
 - 空调用兜底：模型偶发未触发工具调用时抛 _NoToolCallError，
   经 with_fallbacks 触发重试链（追加补注，强制要求调用工具一次）。
