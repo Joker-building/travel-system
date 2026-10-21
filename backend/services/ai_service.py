@@ -552,6 +552,25 @@ class AIService:
     _CN_NUM = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
                "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
 
+    # 天气查询专用城市提取：白名单之外的城市（如鸡西、大同之外的大量地级市）也能从
+    # "XX天气 / XX的天气 / XX未来N天天气" 模式中直接捕获，避免 _extract_city 白名单缺失
+    # 导致天气城市静默回退到历史城市（城市串味 bug：问鸡西却回了深圳天气）。
+    # 城市 token 限 2~3 字（4 字城市不在本应用范围），避免吞入动词/时间前缀。
+    _WEATHER_CITY_RE = re.compile(
+        r"([一-龥]{2,3})\s*(?:的|这几天的?|未来\s*[\d一二两三四五六七八九十]*\s*天(?:的)?)?\s*"
+        r"(?:天气|气温|温度|降雨|下雨|下雪|降水|风力|雾霾)"
+    )
+    _WEATHER_CITY_STOPWORDS = {
+        "这几天", "今天", "明天", "后天", "这里", "那里", "当地", "这个", "那个",
+        "哪里", "哪儿",
+    }
+    # 捕获词若含这些字，基本不是城市（时间/数字/疑问/动词/指代），直接拒绝：
+    # 用于剔除"三天""明天""未来""这几天"等被误判为城市的情形。
+    _WEATHER_CITY_REJECT_CHARS = set(
+        "0123456789一二两三四五六七八九十天日号月年几明昨今后周"
+        "去玩到在游吃住买看帮你我他她它给让请知道想这那"
+    )
+
     @staticmethod
     def _extract_days(text: str) -> Optional[int]:
         """从用户消息中提取游玩天数（确定性）"""
@@ -608,6 +627,32 @@ class AIService:
         if m:
             return int(m.group(1))
         return 3
+
+    @staticmethod
+    def _extract_weather_city(text: str) -> Optional[str]:
+        """从天气类查询中提取用户实际想查的城市（覆盖白名单之外的城市）。
+
+        用「城市词 + 天气关键词」模式直接捕获，能正确取出 鸡西 / 大同 / 拉萨之外的大量
+        地级市；与 _extract_city（仅白名单子串匹配）互补。
+        仅当当前消息确实点名了城市才返回；否则返回 None，由调用方决定是否继承历史城市
+        （避免"问鸡西却用深圳天气上下文回答"的城市串味 bug）。
+        """
+        if not text:
+            return None
+        m = AIService._WEATHER_CITY_RE.search(text)
+        if not m:
+            return None
+        token = m.group(1).strip("的了")  # 剥掉被贪婪匹配吞入的"的/了"（如"上海的气温"→"上海"）
+        if not token or token in AIService._WEATHER_CITY_STOPWORDS:
+            return None
+        # 白名单优先：可剔除动词前缀（"道哈尔滨"→哈尔滨），并兼容含"天"的白名单城市（天津）
+        wl = AIService._extract_city(token)
+        if wl:
+            return wl
+        # 剔除含时间/数字/动词/指代字的误抓（"三天""明天""未来""这几天"等）
+        if any(ch in AIService._WEATHER_CITY_REJECT_CHARS for ch in token):
+            return None
+        return token
 
     @staticmethod
     def _history_has_city_conflict(history: list, current_city: Optional[str]) -> bool:
@@ -791,8 +836,14 @@ class AIService:
             weather_city = cities[0] if cities else None
             weather_days = days if days else 3
         elif is_weather_det:
-            weather_city = AIService._extract_city(message) or (
-                AIService._extract_city_from_history(history_messages) if history_messages else None)
+            # 优先取当前消息点名的城市（_extract_weather_city 覆盖白名单外城市，如鸡西）；
+            # 当前消息未点名时，才继承历史最近城市（如"明天天气怎么样"承接上文深圳）。
+            weather_city = (
+                AIService._extract_weather_city(message)
+                or AIService._extract_city(message)
+                or (AIService._extract_city_from_history(history_messages)
+                    if history_messages else None)
+            )
             weather_days = AIService._extract_weather_days(message)
         else:
             weather_city = None
