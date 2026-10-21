@@ -71,5 +71,11 @@ class Settings:
     APP_PORT: int = int(os.getenv("APP_PORT", "8000"))
     APP_DEBUG: bool = os.getenv("APP_DEBUG", "True").lower() == "true"
 
+    # 对话历史管控（修剪硬限 + 摘要软压缩，对应 Langchain 记忆课件）
+    HISTORY_MAX_PAIRS: int = int(os.getenv("HISTORY_MAX_PAIRS", "12"))      # 最近保留 N 个 (user,assistant) 配对
+    HISTORY_MAX_TOKENS: int = int(os.getenv("HISTORY_MAX_TOKENS", "6000"))  # 历史 token 硬上限（DeepSeek 32k 窗口 ~19%）
+    SUMMARY_TRIGGER_PAIRS: int = int(os.getenv("SUMMARY_TRIGGER_PAIRS", "8"))  # 窗口外累计达此数才重算摘要
+    SUMMARY_MAX_TOKENS: int = int(os.getenv("SUMMARY_MAX_TOKENS", "400"))  # 摘要目标长度
+
 
 settings = Settings()

@@ -20,6 +20,7 @@ class ChatSession(Base):
     update_time = Column(
         DateTime, default=datetime.now, onupdate=datetime.now, comment="更新时间"
     )
+    summary = Column(Text, nullable=True, comment="较早对话的 LLM 摘要(软压缩缓存)")
 
     # 关联关系
     messages = relationship(

@@ -66,8 +66,8 @@ def build_chat_chain(*, history_loader=None, prefs_loader=None, weather_service=
     context_chain = build_context_chain(
         history_loader=history_loader, prefs_loader=prefs_loader, weather_service=weather_service
     )
-    if intent_chain is None:
-        intent_chain = build_intent_chain(model=model)
+    # intent_chain 可空：为空时由 chat() 在链外算好的 is_plan_det/is_weather_det 直接守门（M7）。
+    # 非空时（如单测）仍作 LLM 分类 OR 加固。
     if router_chain is None:
         router_chain = build_router_chain(tools=plan_tools, model=model)
 
@@ -81,19 +81,20 @@ def build_chat_chain(*, history_loader=None, prefs_loader=None, weather_service=
         cities = raw.get("cities") or []
         days = raw.get("days")
         budget = raw.get("budget")
+        summary = raw.get("summary") or None
         is_plan_det = raw.get("is_plan_det", False)
         is_weather_det = raw.get("is_weather_det", False)
 
-        # 合并意图：确定性硬守门 + LLM 分类（plan 优先，避免天气/规划冲突）
+        # 合并意图：注入了 intent_chain 时 LLM 分类作 OR 加固；否则直接信任确定性守门（M7）。
         is_plan = bool(is_plan_det or intent.get("is_plan"))
         is_weather = bool(is_weather_det or intent.get("is_weather"))
         if is_plan:
             is_weather = False
 
-        # 拼装消息（委托 ai_service 抽取的静态方法，含 M1 城市修复）
+        # 拼装消息（委托 ai_service 抽取的静态方法，含 M1 城市修复 + 摘要注入）
         from services.ai_service import AIService
         messages = AIService._assemble_messages(
-            message, history_messages, weather_prompt, cities, days, budget, is_plan
+            message, history_messages, weather_prompt, cities, days, budget, is_plan, summary=summary
         )
         return {"messages": messages, "is_plan": is_plan, "is_weather": is_weather}
 
@@ -116,12 +117,14 @@ def build_chat_chain(*, history_loader=None, prefs_loader=None, weather_service=
         args = AIService._extract_tool_args(tool_calls[0].get("args"))
         return {"response_type": "itinerary", "data": args, "error_code": None}
 
+    parallel = {
+        "context": context_chain,
+        "raw": RunnablePassthrough(),
+    }
+    if intent_chain is not None:
+        parallel["intent"] = intent_chain
     return (
-        RunnableParallel({
-            "context": context_chain,
-            "intent": intent_chain,
-            "raw": RunnablePassthrough(),
-        })
+        RunnableParallel(parallel)
         | RunnableLambda(_assemble)
         | router_chain
         | RunnableLambda(_postprocess)

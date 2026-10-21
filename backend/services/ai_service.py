@@ -763,6 +763,20 @@ class AIService:
         )
 
     @staticmethod
+    async def _understand(message: str, history) -> Optional[object]:
+        """语义理解（LLM 优先）：一次性抽取意图与实体。
+
+        返回 understand_chain 的 DialogUnderstanding；LLM 异常时返回 None，由调用方回退规则。
+        """
+        try:
+            from services.langchain_layer.chains.understand_chain import build_understand_chain
+            chain = build_understand_chain()
+            return await chain.ainvoke({"message": message, "history": history})
+        except Exception as e:
+            logger.warning("[AI] understand_chain 失败，转规则兜底: %s", e)
+            return None
+
+    @staticmethod
     async def chat(db: Session, user_id: int, session_id: Optional[int], message: str) -> dict:
         """AI 对话主入口（Phase 4：委托 chat_chain 顶层编排，修复 M1/M4/M8）。
 
@@ -812,47 +826,99 @@ class AIService:
                      (_t_now - _t_prev) * 1000, (_t_now - _t_total) * 1000)
         _t_prev = _t_now
 
-        # ===== 确定性护栏（M1 统一算一次城市/天数/预算；M7 链外；链内只做无状态 LLM/计算）=====
-        # plan 由确定性规则守住（_is_plan_intent + _is_plan_continuer），其余走通用 QA。
-        is_plan_det = (
+        # ===== 历史管控（修剪硬限 + 摘要软压缩，两段式闸门）=====
+        # for_intent = 全量历史（供意图/城市判定，保确定性逻辑正确）
+        # for_model = 裁剪后历史（喂模型，受 token 硬限，防超上下文窗口）
+        history_cfg = {
+            "max_pairs": settings.HISTORY_MAX_PAIRS,
+            "max_tokens": settings.HISTORY_MAX_TOKENS,
+            "trigger_pairs": settings.SUMMARY_TRIGGER_PAIRS,
+            "summary_max_tokens": settings.SUMMARY_MAX_TOKENS,
+        }
+        from services.history_manager import HistoryManager
+        prepared = HistoryManager.prepare(history_messages, session, history_cfg)
+        history_full = prepared["for_intent"]
+        history_for_model = prepared["for_model"]
+        session_summary = prepared["summary"]
+        # 仅当窗口外累计达阈值才用 LLM 重算摘要（避免每轮额外调用）
+        if session_summary == "__NEED_REFRESH__":
+            try:
+                _dropped = history_full[: len(history_full) - len(history_for_model)]
+                _new_summary = await HistoryManager.build_summary(
+                    _dropped, get_chat_model(), settings.SUMMARY_MAX_TOKENS
+                )
+                if _new_summary:
+                    session.summary = _new_summary
+                    session_summary = _new_summary
+            except Exception as _sum_err:
+                logger.warning("[AI] 摘要重算失败，沿用旧摘要: %s", _sum_err)
+
+        # ===== 语义理解（LLM 优先 + 规则兜底，对应方案 B）=====
+        understand = await AIService._understand(message, history_full)
+
+        # 意图：LLM 优先；置信度过低/异常时全回退规则（OR 加固）
+        rule_plan = (
             AIService._is_plan_intent(message)
-            or (bool(history_messages)
-                and AIService._is_plan_continuer(message, history_messages))
+            or (bool(history_full) and AIService._is_plan_continuer(message, history_full))
         )
+        rule_weather = AIService._is_weather_query(message)
+        if understand is None or understand.confidence < 0.5:
+            is_plan_det = bool(rule_plan)
+            is_weather_det = bool(rule_weather)
+        else:
+            # LLM 优先：置信时以 understand.intent 为准，规则不反向覆盖
+            # （避免 _is_plan_continuer 等脆弱规则把"承接上文的天气问句"误拉成 plan）
+            if understand.intent == "plan":
+                is_plan_det, is_weather_det = True, False
+            elif understand.intent == "weather":
+                is_plan_det, is_weather_det = False, True
+            else:  # qa：规则仅在强烈判定时升级（罕见兜底）
+                is_plan_det = bool(rule_plan)
+                is_weather_det = bool(rule_weather)
+
+        # 实体抽取：LLM 优先，规则兜底（各自独立回退）
+        cities = (understand.cities if (understand and understand.cities) else None) \
+            or AIService._extract_cities(message)
+        days = (understand.days if (understand and understand.days) else None) \
+            or AIService._extract_days(message)
+        budget = (understand.budget if (understand and understand.budget) else None) \
+            or AIService._extract_budget(message)
+
         # 保护：规划意图但消息与历史均无目的地城市时，降级为日常问答（反问城市），
         # 避免 LLM 在无上下文时硬生成默认行程（历史 bug）。
-        cities = AIService._extract_cities(message)
         if is_plan_det:
-            if not cities and history_messages:
-                hist_city = AIService._extract_city_from_history(history_messages)
+            if not cities and history_full:
+                hist_city = AIService._extract_city_from_history(history_full)
                 if hist_city:
                     cities = [hist_city]
             cities = [c for c in cities if c]
             if not cities:
                 is_plan_det = False
 
-        days = AIService._extract_days(message)
-        budget = AIService._extract_budget(message)
-        is_weather_det = AIService._is_weather_query(message)
-
         # weather_inputs：确定性算好后传给 context_chain 并发查询（链外算，M7）
         if is_plan_det:
             weather_city = cities[0] if cities else None
             weather_days = days if days else 3
         elif is_weather_det:
-            # 优先取当前消息点名的城市（_extract_weather_city 覆盖白名单外城市，如鸡西）；
-            # 当前消息未点名时，才继承历史最近城市（如"明天天气怎么样"承接上文深圳）。
+            # 优先取 LLM 点名的城市（覆盖白名单外城市，如鸡西）；
+            # 当前消息未点名时，回退规则（含继承历史最近城市）。
             weather_city = (
-                AIService._extract_weather_city(message)
+                (understand.weather_city if (understand and understand.weather_city) else None)
+                or AIService._extract_weather_city(message)
                 or AIService._extract_city(message)
-                or (AIService._extract_city_from_history(history_messages)
-                    if history_messages else None)
+                or (AIService._extract_city_from_history(history_full) if history_full else None)
             )
             weather_days = AIService._extract_weather_days(message)
         else:
             weather_city = None
             weather_days = 3
         weather_inputs = {"city": weather_city or "", "days": weather_days}
+        logger.info(
+            "[AI][意图判定] session_id=%s user_id=%s is_plan_det=%s is_weather_det=%s "
+            "cities=%s days=%s budget=%s history_count=%d summary=%s",
+            session_id, user_id, is_plan_det, is_weather_det, cities, days, budget,
+            len(history_full), bool(session_summary),
+        )
 
         # ===== 委托 chat_chain 顶层编排（LCEL 多链 + 嵌套 + 并发）=====
         from services.langchain_layer.orchestrator import build_chat_chain
@@ -865,7 +931,7 @@ class AIService:
         try:
             chain_result = await chat_chain.ainvoke({
                 "message": message,
-                "history": history_messages,
+                "history": history_for_model,
                 "weather": weather_inputs,
                 "prefs": {},
                 "cities": cities,
@@ -873,6 +939,8 @@ class AIService:
                 "budget": budget,
                 "is_plan_det": is_plan_det,
                 "is_weather_det": is_weather_det,
+                # 摘要刷新失败时为占位符，不注入 prompt（降级为无摘要）
+                "summary": session_summary if session_summary != "__NEED_REFRESH__" else "",
             })
         except Exception as _chain_err:
             logger.error("[AI] chat_chain 编排异常: %s: %s", type(_chain_err).__name__, _chain_err, exc_info=True)
@@ -943,7 +1011,7 @@ class AIService:
             }
 
     @staticmethod
-    def _assemble_messages(message, history_messages, weather_prompt, cities, days, budget, is_plan):
+    def _assemble_messages(message, history_messages, weather_prompt, cities, days, budget, is_plan, summary=None):
         """拼装发送给 LLM 的 messages（system + 历史自适应 + user）。
 
         修复 M1：城市约束统一用传入的 cities（文本序），primary_city = cities[0]，
@@ -1001,6 +1069,7 @@ class AIService:
                     "并根据天气给出相应的出行建议（如防晒、带伞等）。"
                 )
             include_history = False
+            include_summary = False
         else:
             system_prompt = SYSTEM_PROMPT_QA
             # 天气注入（已在链外查好，可空）
@@ -1012,6 +1081,7 @@ class AIService:
                     "不要再说'无法实时联网查询'。"
                 )
             # 历史自适应（plan 不携带历史；qa 携带若无城市冲突）
+            include_summary = bool(summary)
             include_history = False
             if history_messages:
                 current_city = cities[0] if cities else None
@@ -1019,6 +1089,12 @@ class AIService:
                     include_history = True
 
         messages_for_api = [{"role": "system", "content": system_prompt}]
+        if include_summary:
+            # 早期对话摘要（软压缩）：窗口外旧消息的 LLM 摘要，保语义同时不超 token 窗口
+            messages_for_api.append({
+                "role": "system",
+                "content": f"【早期对话摘要】{summary}",
+            })
         if include_history:
             for m in history_messages:
                 role = getattr(m, "role", None) or "user"
