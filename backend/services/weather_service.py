@@ -1,8 +1,9 @@
 """天气服务：和风天气优先，Open-Meteo 兜底
 
 数据来源策略：
-0. 城市经纬度解析：静态白名单（离线可靠）优先；未命中则经 Open-Meteo 地理编码 API
-   动态解析任意中文城市（免费、无需 Key）；解析失败再走模拟。
+0. 城市经纬度解析：静态白名单（离线可靠）优先；未命中且已配置和风时，经和风地理编码
+   API（geoapi.qweather.com，国内源、复用 QWEATHER_KEY）动态解析任意中文城市；
+   和风未配置时再回退 Open-Meteo 地理编码（境外，国内可能不可达）；解析失败走模拟。
 1. 优先使用和风天气（国内服务，稳定；需配置 QWEATHER_HOST + QWEATHER_KEY，密钥仅服务端）；
 2. 和风未配置或调用失败时，降级使用 Open-Meteo（境外免费接口，无需 Key，但国内网络可能不稳定）；
 3. 两者均失败时，降级为季节性模拟数据。
@@ -63,6 +64,10 @@ class WeatherService:
         "佛山": (23.02, 113.12), "东莞": (23.02, 113.75), "桂林": (25.27, 110.29),
         "阳朔": (24.74, 110.29), "北海": (21.48, 109.12), "三亚": (18.25, 109.51),
         "柳州": (24.33, 109.42),
+        # —— 湖北（全域补充：温泉 / 神农架 / 武当山等目的地） ——
+        "咸宁": (29.8572, 114.2772), "黄石": (30.2006, 115.0351), "十堰": (32.6293, 110.7873),
+        "荆州": (30.3371, 112.2386), "荆门": (31.0353, 112.2041), "鄂州": (30.3964, 114.8906),
+        "孝感": (30.9167, 113.9333), "黄冈": (30.4534, 114.8793), "随州": (31.6922, 113.3718),
         # —— 西南 / 西北 ——
         "大理": (25.69, 100.16), "丽江": (26.87, 100.22), "香格里拉": (27.83, 99.71),
         "遵义": (27.73, 106.93), "景洪": (22.00, 100.80), "乐山": (29.55, 103.77),
@@ -164,11 +169,47 @@ class WeatherService:
             cls._GEOCODE_CACHE[city] = None
             return None
 
+    async def _geocode_via_qweather(self, city: str):
+        """经和风地理编码解析中文城市名 -> (lat, lon)。
+
+        国内源、复用 QWEATHER_KEY，覆盖白名单外城市（如咸宁）。失败（未配置 / 网络 /
+        无结果）返回 None 并交由上层回退 Open-Meteo，不写入缓存（避免阻断兜底链路）。
+        仅成功结果按城市名缓存。
+        """
+        if city in self._GEOCODE_CACHE:
+            return self._GEOCODE_CACHE[city]
+        if not (settings.QWEATHER_HOST and settings.QWEATHER_KEY):
+            return None
+        try:
+            from services.proxy_service import ProxyService
+            data = await ProxyService().qweather_geo(city)
+            if str(data.get("code")) != "200":
+                logger.warning(
+                    "[天气] 和风地理编码失败: %s: %s", city, data.get("message", data.get("code"))
+                )
+                return None
+            locs = data.get("location") or []
+            if not locs:
+                return None
+            geo = locs[0]
+            coords = (float(geo["lat"]), float(geo["lon"]))
+            self._GEOCODE_CACHE[city] = coords
+            logger.info("[天气] 和风地理编码命中: %s -> %s", city, coords)
+            return coords
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[天气] 和风地理编码异常: %s: %s", type(e).__name__, e)
+            return None
+
     async def _resolve_coords(self, city: str) -> Optional[tuple]:
-        """解析城市经纬度：静态白名单优先（离线可靠），未命中再走地理编码 API。"""
+        """解析城市经纬度：静态白名单优先（离线可靠），未命中经和风地理编码
+        （已配置时，国内源），最后回退 Open-Meteo 地理编码（境外）。"""
         coords = self.CITY_COORDS.get(city)
         if coords:
             return coords
+        if settings.QWEATHER_HOST and settings.QWEATHER_KEY:
+            coords = await self._geocode_via_qweather(city)
+            if coords:
+                return coords
         return await self._geocode_via_open_meteo(city)
 
     def _get_season(self) -> str:

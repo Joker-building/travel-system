@@ -53,6 +53,7 @@ class Settings:
     QWEATHER_HOST: str = os.getenv("QWEATHER_HOST", "")
     QWEATHER_KEY: str = os.getenv("QWEATHER_KEY", "")
     QWEATHER_API_URL: str = os.getenv("QWEATHER_API_URL", "https://devapi.qweather.com/v7")
+    QWEATHER_GEO_HOST: str = os.getenv("QWEATHER_GEO_HOST", "geoapi.qweather.com")
     QWEATHER_JWT_TOKEN: str = os.getenv("QWEATHER_JWT_TOKEN", "")
 
     # 高德地图 API（前端逆地理编码经后端 /api/proxy/regeo 代理）

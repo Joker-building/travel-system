@@ -95,6 +95,48 @@ class ProxyService:
         except Exception as e:  # noqa: BLE001
             return {"code": "500", "message": f"和风天气请求失败: {e}"}
 
+    async def qweather_geo(self, city: str) -> dict:
+        """代理和风地理编码（城市名 -> 经纬度），返回原始 JSON。
+
+        与天气 API 同属一个订阅，复用 QWEATHER_KEY。兼容两种订阅形态：
+
+        - 标准订阅：Geo 与天气同主机，路径为 ``/geo/v2/city/lookup``
+          （如 ``https://<host>/geo/v2/city/lookup``）；
+        - 免费开发者版：Geo 为独立主机 ``geoapi.qweather.com``，路径 ``/v2/city/lookup``。
+
+        为避免用户手动配错 ``QWEATHER_GEO_HOST`` 导致 404，这里按候选列表依次尝试，
+        命中第一个返回 ``code==200`` 且含 ``location`` 的地址即返回；全部失败才降级。
+        成功时 location[0] 含 lat/lon。
+        """
+        if not settings.QWEATHER_HOST or not settings.QWEATHER_KEY:
+            return {"code": "401", "message": "服务端未配置和风天气密钥"}
+        params = {"location": city, "key": settings.QWEATHER_KEY, "number": 1}
+
+        # 候选地址：标准订阅(同主机 /geo/v2) 优先，开发者版(独立主机 /v2) 兜底。
+        candidates: list[str] = []
+        if settings.QWEATHER_GEO_HOST and settings.QWEATHER_GEO_HOST != "geoapi.qweather.com":
+            # 用户显式配置了非默认 geo 主机，优先使用
+            candidates.append(f"https://{settings.QWEATHER_GEO_HOST}/v2/city/lookup")
+        candidates.append(f"https://{settings.QWEATHER_HOST}/geo/v2/city/lookup")
+        candidates.append("https://geoapi.qweather.com/v2/city/lookup")
+
+        last_err = None
+        for url in candidates:
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    resp = await client.get(url, params=params)
+                if resp.status_code != 200:
+                    last_err = f"HTTP {resp.status_code} @ {url}"
+                    continue
+                data = resp.json()
+                if str(data.get("code")) == "200" and (data.get("location") or []):
+                    return data
+                # code 非 200 或无结果：记下来，尝试下一个候选
+                last_err = f"code={data.get('code')} {data.get('message') or ''} @ {url}"
+            except Exception as e:  # noqa: BLE001
+                last_err = f"{type(e).__name__}: {e} @ {url}"
+        return {"code": "404", "message": f"和风地理编码请求失败（全部候选失败）: {last_err}"}
+
     # ---------- 空气质量（Open-Meteo，免密钥） ----------
     async def air_quality(self, location: str) -> dict:
         """根据经纬度获取空气质量（AQI）。
