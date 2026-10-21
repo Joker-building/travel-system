@@ -15,6 +15,8 @@ from services.langchain_layer.chains.context_chain import (
     build_context_chain,
     build_context_loader,
 )
+from services.langchain_layer.chains.intent_chain import build_intent_chain
+from services.langchain_layer.chains.router_chain import build_router_chain
 
 __all__ = [
     "build_json_chain",
@@ -29,4 +31,6 @@ __all__ = [
     "build_scenic_detail_chain",
     "build_context_chain",
     "build_context_loader",
+    "build_intent_chain",
+    "build_router_chain",
 ]

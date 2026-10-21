@@ -713,7 +713,12 @@ class AIService:
 
     @staticmethod
     async def chat(db: Session, user_id: int, session_id: Optional[int], message: str) -> dict:
-        """AI 对话主入口"""
+        """AI 对话主入口（Phase 4：委托 chat_chain 顶层编排，修复 M1/M4/M8）。
+
+        门面签名不变；内部不再手写 400 行拼装/调用/解析，改为委托
+        services.langchain_layer.orchestrator.build_chat_chain（LCEL 多链 + 嵌套 + 并发）。
+        DB 会话管理、历史查询、行程兜底覆盖、AI 回复落库仍在链外（M7）。
+        """
         import time
         _t_total = time.perf_counter()
         _t_prev = _t_total
@@ -743,7 +748,7 @@ class AIService:
         )
         db.add(user_msg)
 
-        # 获取历史消息构建上下文
+        # 获取历史消息构建上下文（链外查 DB，M7）
         history_messages = (
             db.query(ChatMessage)
             .filter(ChatMessage.session_id == session_id)
@@ -755,41 +760,140 @@ class AIService:
         print(f"[AI] 阶段耗时 | 会话与历史加载: {(_t_now - _t_prev) * 1000:.1f}ms | 累计: {(_t_now - _t_total) * 1000:.1f}ms", flush=True)
         _t_prev = _t_now
 
-        # ===== 规划意图判定（原始规则，不依赖意图分类器）=====
+        # ===== 确定性护栏（M1 统一算一次城市/天数/预算；M7 链外；链内只做无状态 LLM/计算）=====
         # plan 由确定性规则守住（_is_plan_intent + _is_plan_continuer），其余走通用 QA。
-        is_plan = (
+        is_plan_det = (
             AIService._is_plan_intent(message)
             or (bool(history_messages)
                 and AIService._is_plan_continuer(message, history_messages))
         )
         # 保护：规划意图但消息与历史均无目的地城市时，降级为日常问答（反问城市），
         # 避免 LLM 在无上下文时硬生成默认行程（历史 bug）。
-        if is_plan:
-            _cities = AIService._extract_cities(message) or (
-                [AIService._extract_city_from_history(history_messages)]
-                if history_messages else [])
-            _cities = [c for c in _cities if c]
-            if not _cities:
-                is_plan = False
-
-        _t_now = time.perf_counter()
-        print(f"[AI] 阶段耗时 | 意图识别: {(_t_now - _t_prev) * 1000:.1f}ms | 累计: {(_t_now - _t_total) * 1000:.1f}ms", flush=True)
-        _t_prev = _t_now
-
-        # 构建发送给 DeepSeek 的 messages
-        # 规划意图使用简短的"必须调用工具"提示（function calling 强制结构化），否则用通用 prompt
-        if is_plan:
-            system_prompt = SYSTEM_PROMPT_PLAN_TOOL
-            # 确定性城市注入：提取用户消息中所有提到的城市（多城市支持）。
-            # - 单城市：保持原有的"强约束"（强制 dest_city 与所有景点 city 等于该城市）
-            # - 多城市：改为"软约束"，要求覆盖全部城市；dest_city 用首发城市，
-            #   其它城市景点在其各自的 city 字段写明所属城市，narrative 每天标注所在城市
-            cities = AIService._extract_cities(message)
-            # 承接上文规划：用户消息（如『需要』）不含城市，从历史继承上一轮的目的地城市
-            if not cities and is_plan:
+        cities = AIService._extract_cities(message)
+        if is_plan_det:
+            if not cities and history_messages:
                 hist_city = AIService._extract_city_from_history(history_messages)
                 if hist_city:
                     cities = [hist_city]
+            cities = [c for c in cities if c]
+            if not cities:
+                is_plan_det = False
+
+        days = AIService._extract_days(message)
+        budget = AIService._extract_budget(message)
+        is_weather_det = AIService._is_weather_query(message)
+
+        # weather_inputs：确定性算好后传给 context_chain 并发查询（链外算，M7）
+        if is_plan_det:
+            weather_city = cities[0] if cities else None
+            weather_days = days if days else 3
+        elif is_weather_det:
+            weather_city = AIService._extract_city(message) or (
+                AIService._extract_city_from_history(history_messages) if history_messages else None)
+            weather_days = AIService._extract_weather_days(message)
+        else:
+            weather_city = None
+            weather_days = 3
+        weather_inputs = {"city": weather_city or "", "days": weather_days}
+
+        # ===== 委托 chat_chain 顶层编排（LCEL 多链 + 嵌套 + 并发）=====
+        from services.langchain_layer.orchestrator import build_chat_chain
+        chat_chain = build_chat_chain(weather_service=None)  # 默认真实 WeatherService 懒加载
+        _t_now = time.perf_counter()
+        print(f"[AI] 阶段耗时 | 意图与天气准备: {(_t_now - _t_prev) * 1000:.1f}ms | 累计: {(_t_now - _t_total) * 1000:.1f}ms", flush=True)
+        _t_prev = _t_now
+
+        try:
+            chain_result = await chat_chain.ainvoke({
+                "message": message,
+                "history": history_messages,
+                "weather": weather_inputs,
+                "prefs": {},
+                "cities": cities,
+                "days": days,
+                "budget": budget,
+                "is_plan_det": is_plan_det,
+                "is_weather_det": is_weather_det,
+            })
+        except Exception as _chain_err:
+            print(f"[AI] chat_chain 编排异常: {type(_chain_err).__name__}: {_chain_err}", flush=True)
+            return {
+                "success": True,
+                "response_type": "question_answer",
+                "session_id": session_id,
+                "chat_title": session.session_title,
+                "answer": "抱歉，AI 暂时没能生成回复（可能是接口限流或网络异常）。请稍后重试，或把需求描述得更明确一些。",
+            }
+
+        response_type = chain_result.get("response_type")
+        data = chain_result.get("data") or {}
+        error_code = chain_result.get("error_code")
+
+        # 规划分支：确定性兜底覆盖（M1 修复：用 cities[0] 文本序，替代原 _extract_city bug）
+        if response_type == "itinerary":
+            city = cities[0] if cities else None
+            trip = data.setdefault("trip", {})
+            if city:
+                trip["dest_city"] = city
+            if days:
+                trip["travel_days"] = days
+            if budget is not None:
+                trip["total_budget"] = budget
+            if city and days:
+                data["chat_title"] = f"{city}{days}日游规划"
+
+        # 保存 AI 回复（自然语言摘要，避免历史 assistant 为 JSON 污染上下文）
+        if response_type == "itinerary":
+            save_content = data.get("narrative") or f"已为您生成{data.get('chat_title', '行程规划')}"
+        else:
+            save_content = data.get("answer") or ""
+        ai_msg = ChatMessage(
+            session_id=session_id,
+            role="assistant",
+            content=save_content,
+            create_time=datetime.now(),
+        )
+        db.add(ai_msg)
+        session.update_time = datetime.now()
+        db.commit()
+
+        _t_now = time.perf_counter()
+        print(f"[AI] 阶段耗时 | 回复落库: {(_t_now - _t_prev) * 1000:.1f}ms | 累计: {(_t_now - _t_total) * 1000:.1f}ms", flush=True)
+        print(f"[AI] chat 总耗时: {(_t_now - _t_total) * 1000:.1f}ms", flush=True)
+
+        if response_type == "itinerary":
+            return {
+                "success": True,
+                "response_type": "itinerary",
+                "session_id": session_id,
+                "chat_title": data.get("chat_title", session.session_title),
+                "narrative": data.get("narrative", ""),
+                "needs_save": True,
+                "data": data,
+                "error_code": error_code,
+            }
+        else:
+            return {
+                "success": True,
+                "response_type": "question_answer",
+                "session_id": session_id,
+                "chat_title": data.get("chat_title", session.session_title),
+                "answer": data.get("answer", ""),
+                "error_code": error_code,
+            }
+
+    @staticmethod
+    def _assemble_messages(message, history_messages, weather_prompt, cities, days, budget, is_plan):
+        """拼装发送给 LLM 的 messages（system + 历史自适应 + user）。
+
+        修复 M1：城市约束统一用传入的 cities（文本序），primary_city = cities[0]，
+        不再用 _extract_city（固定列表序，会导致多城市 dest_city/标题取错）。
+        天气注入用传入的 weather_prompt（已在链外查好，可空）。
+        本方法为纯函数（无 LLM 调用），被 orchestrator.chat_chain 的 _assemble 调用。
+        """
+        if is_plan:
+            system_prompt = SYSTEM_PROMPT_PLAN_TOOL
+            # 确定性城市注入（M1 修复：用传入 cities 文本序，primary_city=cities[0]）
             if len(cities) == 1:
                 city = cities[0]
                 system_prompt += (
@@ -810,13 +914,9 @@ class AIService:
                     f"其它城市景点在其各自的 city 字段写明所属城市即可。"
                     f"严禁只覆盖其中一个城市而忽略其他城市。"
                 )
-            else:
-                city = None
-            # 确定性天数注入：提取"X日游/天游"，强制 travel_days 与标题天数一致
-            days = AIService._extract_days(message)
+            # 确定性天数注入
             if days:
                 if cities:
-                    # 多城市标题用"城市A、城市B…+N日游规划"，避免被压缩成单城市
                     title_city = "、".join(cities[:3]) if len(cities) >= 2 else (cities[0] if cities else '')
                 else:
                     title_city = ''
@@ -825,292 +925,51 @@ class AIService:
                     f"travel_days 必须严格等于 {days}，不得自行改为其他天数；"
                     f"chat_title 必须写成「{title_city}{days}日游规划」。"
                 )
-            # 确定性预算注入：提取"预算XXXX元"，强制 total_budget 一致
-            budget = AIService._extract_budget(message)
+            # 确定性预算注入
             if budget is not None:
                 system_prompt += (
                     f"\n用户明确指定的预算是：{budget} 元。"
                     f"total_budget 必须严格等于 {budget}，不得自行改为其他金额。"
                 )
-
-            # ==== 天气注入（Open-Meteo，无需 Key；失败时自动降级为季节性模拟数据）====
-            try:
-                from services.weather_service import WeatherService
-                if city:
-                    weather_svc = WeatherService()
-                    # 按用户实际游玩天数请求天气，确保 narrative 中每一天都有天气可嵌入
-                    weather_days = days if days else 3
-                    weather_data = await weather_svc.get_weather_forecast(city, days=weather_days)
-                    if weather_data.get("success"):
-                        weather_prompt = weather_svc.format_weather_for_prompt(weather_data)
-                        if weather_prompt:
-                            system_prompt += weather_prompt
-                            # 明确要求 AI 把天气嵌入到 narrative 的每日安排中
-                            system_prompt += (
-                                "\n【重要】你必须将上述天气信息嵌入到 narrative 字段的每日详细安排中，"
-                                "在每一天的开头标注当天天气"
-                                "（如'第1天（8月14日，晴转多云 26~35°C）：'），"
-                                "并根据天气给出相应的出行建议（如防晒、带伞等）。"
-                            )
-            except Exception as e:
-                print(f"天气获取失败: {e}", flush=True)
+            # 天气注入（已在链外查好，可空）
+            if weather_prompt:
+                system_prompt += weather_prompt
+                system_prompt += (
+                    "\n【重要】你必须将上述天气信息嵌入到 narrative 字段的每日安排中，"
+                    "在每一天的开头标注当天天气"
+                    "（如'第1天（8月14日，晴转多云 26~35°C）：'），"
+                    "并根据天气给出相应的出行建议（如防晒、带伞等）。"
+                )
+            include_history = False
         else:
             system_prompt = SYSTEM_PROMPT_QA
-            # 【关键】不再注入城市焦点：
-            # 之前的实现会提取消息中的城市（如"武汉"）并强制"请直接围绕武汉作答"，
-            # 这会导致：
-            #  1) 用户问"从恩施到武汉做什么交通工具"时，AI 被迫只谈武汉，忽略交通问题；
-            #  2) 用户问"给我取个艺名"（无城市）时，从历史继承"武汉"，AI 被迫回答武汉交通。
-            # 现在完全移除城市注入，让 AI 根据当前消息字面内容自由作答。
-
-            # ==== QA 分支天气查询：若用户直接问天气，主动注入实时天气数据 ====
-            if AIService._is_weather_query(message):
-                try:
-                    from services.weather_service import WeatherService
-                    weather_city = AIService._extract_city(message)
-                    # 若当前消息未指定城市，尝试继承历史中的城市
-                    if not weather_city and history_messages:
-                        weather_city = AIService._extract_city_from_history(history_messages)
-                    if weather_city:
-                        weather_days = AIService._extract_weather_days(message)
-                        weather_svc = WeatherService()
-                        weather_data = await weather_svc.get_weather_forecast(
-                            weather_city, days=weather_days
-                        )
-                        if weather_data.get("success"):
-                            weather_prompt = weather_svc.format_weather_for_prompt(weather_data)
-                            if weather_prompt:
-                                system_prompt += weather_prompt
-                                system_prompt += (
-                                    "\n【重要】以上是你可用的天气数据。"
-                                    "请直接根据这些数据回答用户的天气问题，给出具体城市、日期、天气状况、温度范围和风力，"
-                                    "不要再说'无法实时联网查询'。"
-                                )
-                except Exception as e:
-                    print(f"QA 天气获取失败: {e}", flush=True)
-        _t_now = time.perf_counter()
-        print(f"[AI] 阶段耗时 | 提示构建与天气注入: {(_t_now - _t_prev) * 1000:.1f}ms | 累计: {(_t_now - _t_total) * 1000:.1f}ms", flush=True)
-        _t_prev = _t_now
-        messages_for_api = [{"role": "system", "content": system_prompt}]
-        # 规划意图不携带历史消息：每次行程规划是独立任务，
-        # 历史中其他城市的 narrative 会干扰 DeepSeek 生成正确的回复
-        # （如先问长沙再问北京，narrative 仍会写成长沙）
-        # QA 分支采用"自适应历史"策略（方案 C）：
-        #   - 若历史与当前话题存在城市冲突（历史 assistant 消息里出现过其他城市的
-        #     行程规划痕迹，或历史含多个不同城市而用户未指定城市），则不携带历史，
-        #     避免上一轮话题污染当前回复；
-        #   - 否则携带全部历史，使"需要/好的/然后呢"等承接追问能接上上下文。
-        # QA 分支"自适应历史"：仅当历史与当前话题无城市冲突时才携带，避免污染。
-        # 同时记录 include_history 标志，供下方方案 B 的短句上下文补全复用。
-        include_history = False
-        if not is_plan:
+            # 天气注入（已在链外查好，可空）
+            if weather_prompt:
+                system_prompt += weather_prompt
+                system_prompt += (
+                    "\n【重要】以上是你可用的天气数据。"
+                    "请直接根据这些数据回答用户的天气问题，给出具体城市、日期、天气状况、温度范围和风力，"
+                    "不要再说'无法实时联网查询'。"
+                )
+            # 历史自适应（plan 不携带历史；qa 携带若无城市冲突）
+            include_history = False
             if history_messages:
-                current_city = AIService._extract_city(message)
+                current_city = cities[0] if cities else None
                 if not AIService._history_has_city_conflict(history_messages, current_city):
                     include_history = True
-                    for m in history_messages:
-                        messages_for_api.append({"role": m.role, "content": m.content})
-        # 【关键】始终携带当前用户消息（规划/问答均需要）
-        # 方案 B：仅在历史会被携带（无城市冲突）时，对极简"选择问作答"做上下文补全，
-        # 避免无历史时编造"讨论北京"误导模型；同时绝不改动存入数据库的原始 message。
+
+        messages_for_api = [{"role": "system", "content": system_prompt}]
+        if include_history:
+            for m in history_messages:
+                role = getattr(m, "role", None) or "user"
+                content = getattr(m, "content", None) or ""
+                messages_for_api.append({"role": role, "content": content})
+        # 始终携带当前用户消息
         effective_message = message
         if include_history:
             effective_message = AIService._rewrite_short_answer(message, history_messages)
         messages_for_api.append({"role": "user", "content": effective_message})
-
-        _t_now = time.perf_counter()
-        print(f"[AI] 阶段耗时 | 消息拼装: {(_t_now - _t_prev) * 1000:.1f}ms | 累计: {(_t_now - _t_total) * 1000:.1f}ms", flush=True)
-        _t_prev = _t_now
-
-        # 调用 DeepSeek API（规划意图走 function calling，强制结构化行程输出）
-        _ds_start = time.time()
-        _history_count = len(history_messages or [])
-        print(f"[AI] 调用 DeepSeek: is_plan={is_plan} history_msgs={_history_count} total_msgs={len(messages_for_api)} message='{message[:30]}{'...' if len(message)>30 else ''}'", flush=True)
-        try:
-            if is_plan:
-                # 行程规划：走 Langchain tool-calling 智能体（run_itinerary_agent），
-                # 由编排层强制调用 create_itinerary 工具，并内置「空工具调用→强制重试一次」兜底。
-                ai_response_text = ""
-                try:
-                    agent_result = await run_itinerary_agent(messages_for_api, ITINERARY_TOOL)
-                except Exception as _agent_err:
-                    print(f"[AI] 行程规划智能体异常: {type(_agent_err).__name__}: {_agent_err}", flush=True)
-                    return {
-                        "success": True,
-                        "response_type": "question_answer",
-                        "session_id": session_id,
-                        "chat_title": session.session_title,
-                        "answer": "抱歉，AI 暂时没能生成行程方案（可能是接口限流或网络异常）。请稍后重试，或把需求描述得更明确一些（例如「帮我规划武汉3日游，预算2000元」）。",
-                    }
-                tool_calls = agent_result.get("tool_calls") or []
-                if not tool_calls:
-                    # 智能体（含重试）仍未触发工具调用：给出友好兜底，绝不把空内容存给用户
-                    print("[AI] 行程规划智能体（含重试）未触发工具调用，返回友好兜底", flush=True)
-                    return {
-                        "success": True,
-                        "response_type": "question_answer",
-                        "session_id": session_id,
-                        "chat_title": session.session_title,
-                        "answer": "抱歉，AI 暂时没能生成完整行程（可能是接口限流或网络异常）。请稍后重试，或把需求描述得更明确一些（例如「帮我规划武汉3日游，预算2000元」）。",
-                    }
-                # 使用稳健的 arguments 解析（DeepSeek 可能双重 JSON 编码 arguments）
-                data = AIService._extract_tool_args(tool_calls[0]["args"])
-                response_type = "itinerary"
-                # 确定性兜底：用代码强制覆盖用户明确给定的城市/天数/预算，
-                # 彻底消除模型偶发的"3日游→5日游""预算2000→3000"等幻觉
-                city = AIService._extract_city(message)
-                days = AIService._extract_days(message)
-                budget = AIService._extract_budget(message)
-                trip = data.setdefault("trip", {})
-                if city:
-                    trip["dest_city"] = city
-                if days:
-                    trip["travel_days"] = days
-                if budget is not None:
-                    trip["total_budget"] = budget
-                if city and days:
-                    data["chat_title"] = f"{city}{days}日游规划"
-            else:
-                raw = await AIService.call_deepseek_api(messages_for_api)
-                # DeepSeek 偶发返回空 choices/content（如限流、触发安全过滤、网络抖动），
-                # 这里先做结构校验并打印原始片段，避免后续对 None 调 .get 崩溃
-                if not isinstance(raw, dict) or not raw.get("choices"):
-                    print(f"[AI] 警告: DeepSeek 返回结构异常 raw={str(raw)[:400]}", flush=True)
-                    return {
-                        "success": True,
-                        "response_type": "question_answer",
-                        "session_id": session_id,
-                        "chat_title": session.session_title,
-                        "answer": "抱歉，AI 服务暂时没有返回内容（可能是接口限流或网络异常）。请稍后重试，或换一种说法描述您的需求。",
-                    }
-                ai_response_text = AIService._extract_content(raw)
-                if not ai_response_text.strip():
-                    print(f"[AI] 警告: DeepSeek content 为空 choices={str(raw.get('choices'))[:400]} → 触发续写重试", flush=True)
-                    # 自动重试一次：DeepSeek 在 json_object 模式下偶发空白输出（限流/安全过滤/抖动）。
-                    # 注意：重试补注【严禁】假设用户在确认行程——旧实现写死了"用户说需要→给行程草稿"，
-                    # 导致任何 QA 空白回复被重试时都会强行生成 3 日游（与用户真实意图无关，如"单纯聊饮料""肯德基"）。
-                    # 这里只要求模型基于历史正常回答用户【最新一条消息】，并输出合法 QA JSON，绝不 coerce 行程。
-                    retry_messages = messages_for_api + [{
-                        "role": "user",
-                        "content": (
-                            "（系统补注：你上一轮回复出现了空白内容，已被丢弃，请勿向用户提及此事。）\n"
-                            "你是友好的旅游助手。请基于【完整对话历史】，针对用户【最新一条消息】给出自然、准确的中文回复；"
-                            "不要生成完整行程规划，也不要调用任何工具。\n"
-                            "请只输出合法 JSON 对象，结构严格如下：\n"
-                            '{"response_type":"question_answer","data":{"chat_title":"<简短会话标题>","answer":"<针对用户最新消息的真实中文回复>"}}\n'
-                            "answer 字段必须填入真正的回复内容，绝对不要照抄占位符、不要只输出空格、不要反问无关问题。"
-                        )
-                    }]
-                    raw2 = await AIService.call_deepseek_api(retry_messages)
-                    if isinstance(raw2, dict) and raw2.get("choices"):
-                        ai_response_text = AIService._extract_content(raw2)
-                    else:
-                        ai_response_text = ""
-                    if ai_response_text.strip():
-                        print("[AI] 续写重试成功：已获取实质内容", flush=True)
-                    else:
-                        print(f"[AI] 重试仍为空 raw={str(raw2)[:400]}", flush=True)
-                        return {
-                            "success": True,
-                            "response_type": "question_answer",
-                            "session_id": session_id,
-                            "chat_title": session.session_title,
-                            "answer": "抱歉，AI 暂时没能生成回复。请稍后重试，或换一种说法（例如直接说「帮我规划西安3日游」）。",
-                        }
-                data = AIService.parse_json_response(ai_response_text) or {}
-                if not isinstance(data, dict):
-                    data = {}
-                # 非规划分支：一律走问答，绝不生成/保存行程（避免把咨询误当成行程）
-                response_type = "question_answer"
-                # 归一化：模型常把正文包在 data 子字段里，上提以便统一读取
-                inner = data.get("data")
-                if isinstance(inner, dict):
-                    for k, v in inner.items():
-                        data.setdefault(k, v)
-                    data.pop("data", None)
-        except (ValueError, json.JSONDecodeError) as _parse_err:
-            # 解析失败：尽力从已经拿到的数据或 AI 原文里提取可读中文，
-            # 绝不把包含 tool_calls 的完整 JSON 原样返回给用户。
-            print(f"[AI] JSON 解析异常: {type(_parse_err).__name__}: {_parse_err} → 尝试提取可读内容作为兜底", flush=True)
-            fallback_answer = ""
-            # 1) 若有 data（可能在前面已经部分解析过），优先取 narrative/answer
-            if "data" in locals() and isinstance(data, dict):
-                fallback_answer = data.get("narrative") or data.get("answer") or ""
-            # 2) 否则从 ai_response_text 中尝试提取 narrative/answer 字段（可能是 JSON 片段）
-            if not fallback_answer and isinstance(ai_response_text, str):
-                maybe_extracted = AIService._extract_human_text_from_ai_raw(ai_response_text)
-                fallback_answer = maybe_extracted
-            # 3) 终极兜底：友好错误提示
-            if not fallback_answer:
-                fallback_answer = (
-                    "抱歉，AI 返回的内容暂时无法解析为结构化行程。"
-                    "请稍后重试，或把需求描述得更明确一些（例如「帮我规划武汉3日游，预算2000元」）。"
-                )
-            ai_msg = ChatMessage(session_id=session_id, role="assistant", content=fallback_answer, create_time=datetime.now())
-            db.add(ai_msg)
-            session.update_time = datetime.now()
-            db.commit()
-            return {
-                "success": True,
-                "response_type": "question_answer",
-                "session_id": session_id,
-                "chat_title": session.session_title,
-                "answer": fallback_answer,
-            }
-        except Exception as e:
-            _ds_cost = time.time() - _ds_start
-            print(f"[AI] 调用失败: {type(e).__name__}: {e} 耗时={_ds_cost:.2f}s", flush=True)
-            return {"success": False, "message": f"AI服务调用失败: {str(e)}"}
-
-        _ds_cost = time.time() - _ds_start
-        print(f"[AI] DeepSeek 调用成功: 耗时={_ds_cost:.2f}s response_type={response_type}", flush=True)
-
-        # 保存 AI 回复
-        # 保存自然语言摘要而非原始 JSON/tool_calls，避免多轮对话时历史 assistant
-        # 消息为 JSON 格式污染上下文（否则问"北京计划"时 AI 仍重复上一轮"长沙"）
-        if response_type == "itinerary":
-            save_content = data.get("narrative") or f"已为您生成{data.get('chat_title', '行程规划')}"
-        else:
-            save_content = data.get("answer") or ai_response_text
-
-        ai_msg = ChatMessage(
-            session_id=session_id,
-            role="assistant",
-            content=save_content,
-            create_time=datetime.now(),
-        )
-        db.add(ai_msg)
-
-        # 更新会话时间
-        session.update_time = datetime.now()
-        db.commit()
-
-        _t_now = time.perf_counter()
-        print(f"[AI] 阶段耗时 | 回复落库: {(_t_now - _t_prev) * 1000:.1f}ms | 累计: {(_t_now - _t_total) * 1000:.1f}ms", flush=True)
-        print(f"[AI] chat 总耗时: {(_t_now - _t_total) * 1000:.1f}ms", flush=True)
-
-        if response_type == "itinerary":
-            # 不再自动落库：仅返回计划数据，标记为待确认（needs_save）。
-            # 用户在前端点「添加到行程」后，前端调用
-            # POST /api/planning/itinerary/save 才会真正写入行程库。
-            return {
-                "success": True,
-                "response_type": "itinerary",
-                "session_id": session_id,
-                "chat_title": data.get("chat_title", session.session_title),
-                "narrative": data.get("narrative", ""),
-                "needs_save": True,
-                "data": data,
-            }
-        else:
-            # 问答模式
-            return {
-                "success": True,
-                "response_type": "question_answer",
-                "session_id": session_id,
-                "chat_title": data.get("chat_title", session.session_title),
-                "answer": data.get("answer", ""),
-            }
+        return messages_for_api
 
     @staticmethod
     def _process_itinerary(db: Session, user_id: int, data: dict) -> Optional[int]:
