@@ -10,10 +10,8 @@
 - run_itinerary_agent    : 行程规划 tool-calling 智能体（含空工具调用兜底）
 """
 from services.langchain_layer.llm import get_chat_model
-from services.langchain_layer.orchestrator import (
-    to_langchain_messages,
-    run_itinerary_agent,
-)
+from services.langchain_layer.orchestrator import run_itinerary_agent
+from services.langchain_layer.messages import to_langchain_messages
 
 __all__ = [
     "get_chat_model",
