@@ -52,6 +52,18 @@ def test_extract_weather_city_common_patterns():
     assert ai.AIService._extract_weather_city("我想知道哈尔滨的天气") == "哈尔滨"
 
 
+def test_extract_weather_city_recent_time_words():
+    """回归：覆盖「最近 / 近期 / 最近几天 / 近N天 / 近N周」等时间词（原 bug 把『鸡西最近天气』误抓成『西最近』）。"""
+    import services.ai_service as ai
+    # 直接复现日志暴露的两个失败用例
+    assert ai.AIService._extract_weather_city("鸡西最近天气") == "鸡西"
+    assert ai.AIService._extract_weather_city("鞍山最近几天的天气") == "鞍山"
+    # 其它时间词变体
+    assert ai.AIService._extract_weather_city("哈尔滨近期天气") == "哈尔滨"
+    assert ai.AIService._extract_weather_city("北京近三天天气") == "北京"
+    assert ai.AIService._extract_weather_city("广州近一周天气") == "广州"
+
+
 def test_extract_weather_city_no_city_falls_back_to_none():
     import services.ai_service as ai
     # 未点名城市 —— 应返回 None，交由调用方继承历史城市
