@@ -1,9 +1,12 @@
 """AI服务：对接 DeepSeek 大模型，实现智能行程生成、智能问答、景点搜索"""
 
 import json
+import logging
 import re
 from datetime import datetime, date, timedelta
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from sqlalchemy.orm import Session
 
@@ -757,7 +760,8 @@ class AIService:
         )
 
         _t_now = time.perf_counter()
-        print(f"[AI] 阶段耗时 | 会话与历史加载: {(_t_now - _t_prev) * 1000:.1f}ms | 累计: {(_t_now - _t_total) * 1000:.1f}ms", flush=True)
+        logger.debug("[AI] 阶段耗时 | 会话与历史加载: %.1fms | 累计: %.1fms",
+                     (_t_now - _t_prev) * 1000, (_t_now - _t_total) * 1000)
         _t_prev = _t_now
 
         # ===== 确定性护栏（M1 统一算一次城市/天数/预算；M7 链外；链内只做无状态 LLM/计算）=====
@@ -800,7 +804,8 @@ class AIService:
         from services.langchain_layer.orchestrator import build_chat_chain
         chat_chain = build_chat_chain(weather_service=None)  # 默认真实 WeatherService 懒加载
         _t_now = time.perf_counter()
-        print(f"[AI] 阶段耗时 | 意图与天气准备: {(_t_now - _t_prev) * 1000:.1f}ms | 累计: {(_t_now - _t_total) * 1000:.1f}ms", flush=True)
+        logger.debug("[AI] 阶段耗时 | 意图与天气准备: %.1fms | 累计: %.1fms",
+                     (_t_now - _t_prev) * 1000, (_t_now - _t_total) * 1000)
         _t_prev = _t_now
 
         try:
@@ -816,7 +821,7 @@ class AIService:
                 "is_weather_det": is_weather_det,
             })
         except Exception as _chain_err:
-            print(f"[AI] chat_chain 编排异常: {type(_chain_err).__name__}: {_chain_err}", flush=True)
+            logger.error("[AI] chat_chain 编排异常: %s: %s", type(_chain_err).__name__, _chain_err, exc_info=True)
             return {
                 "success": True,
                 "response_type": "question_answer",
@@ -858,8 +863,9 @@ class AIService:
         db.commit()
 
         _t_now = time.perf_counter()
-        print(f"[AI] 阶段耗时 | 回复落库: {(_t_now - _t_prev) * 1000:.1f}ms | 累计: {(_t_now - _t_total) * 1000:.1f}ms", flush=True)
-        print(f"[AI] chat 总耗时: {(_t_now - _t_total) * 1000:.1f}ms", flush=True)
+        logger.debug("[AI] 阶段耗时 | 回复落库: %.1fms | 累计: %.1fms",
+                     (_t_now - _t_prev) * 1000, (_t_now - _t_total) * 1000)
+        logger.debug("[AI] chat 总耗时: %.1fms", (_t_now - _t_total) * 1000)
 
         if response_type == "itinerary":
             return {
@@ -1147,8 +1153,13 @@ class AIService:
         }
 
     @staticmethod
-    async def search_scenic(db: Session, keyword: str, city: str) -> dict:
-        """AI 搜索景点（高德式）：返回多个候选景点卡片列表"""
+    async def search_scenic(keyword: str, city: str) -> dict:
+        """AI 搜索景点（高德式）：返回多个候选景点卡片列表。
+
+        修复 M5：默认不落库。AI 幻觉出的虚假景点不应持续写入 scenic_spot 表，
+        避免每次搜索 N 次 commit 造成数据堆积。卡片以 AI 返回为主组装，
+        id 留空（None），待前端「加入行程」时显式经 ScenicService 持久化。
+        """
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT_SCENIC_SEARCH_LIST},
             {
@@ -1168,11 +1179,8 @@ class AIService:
             if not items:
                 return {"success": False, "message": "AI未返回有效搜索结果"}
 
-            # 写入数据库并组装高德式卡片列表
-            results = []
-            for it in items:
-                scenic = AIService._find_or_create_scenic(db, it)
-                results.append(AIService._build_scenic_card(scenic, it))
+            # 修复 M5：默认不落库，直接以 AI 返回组装高德式卡片（id=None）
+            results = [AIService._build_scenic_card(None, it) for it in items]
 
             return {
                 "success": True,
@@ -1182,14 +1190,15 @@ class AIService:
                 "results": results,
             }
         except Exception as e:
+            logger.error("[AI] 景点搜索失败: %s", e, exc_info=True)
             return {"success": False, "message": f"AI搜索失败: {str(e)}"}
 
     @staticmethod
-    async def get_scenic_detail(scenic_name: str, city: str, db: Optional[Session] = None) -> dict:
+    async def get_scenic_detail(scenic_name: str, city: str) -> dict:
         """AI 获取景点详细信息（景区介绍、门票、注意事项、预算规划）。
 
-        若传入 db，会把 AI 结果 upsert 进 scenic_spot 表，并在返回中附带景点 id，
-        便于后续行程复用；不传 db 时仅做纯查询返回。
+        修复 M6：只读。删除原 db 落库（upsert）分支（dead code）——路由调用从未传 db，
+        且该隐式写库会污染 scenic_spot 表。现仅调用 LLM 并返回详情。
         """
         # 入参校验
         if not scenic_name or not scenic_name.strip() or not city or not city.strip():
@@ -1215,42 +1224,11 @@ class AIService:
                 "budget_suggestion": result.get("budget_suggestion", ""),
             }
 
-            # 可选：把 AI 结果落库（upsert），便于后续行程复用
-            scenic_id = None
-            if db is not None:
-                scenic = (
-                    db.query(ScenicSpot)
-                    .filter(ScenicSpot.name == scenic_name, ScenicSpot.city == city)
-                    .first()
-                )
-                if scenic:
-                    if detail["introduction"]:
-                        scenic.introduction = detail["introduction"]
-                    if detail["price"]:
-                        scenic.price = detail["price"]
-                    if detail["special_notice"]:
-                        scenic.special_notice = detail["special_notice"]
-                    scenic_id = scenic.id
-                    db.commit()
-                else:
-                    new_spot = ScenicSpot(
-                        name=scenic_name,
-                        city=city,
-                        introduction=detail["introduction"],
-                        price=detail["price"],
-                        special_notice=detail["special_notice"],
-                        create_time=datetime.now(),
-                    )
-                    db.add(new_spot)
-                    db.commit()
-                    db.refresh(new_spot)
-                    scenic_id = new_spot.id
-
             return {
                 "success": True,
-                "scenic_id": scenic_id,
                 "detail": detail,
             }
         except Exception as e:
+            logger.error("[AI] 景点详情获取失败: %s", e, exc_info=True)
             return {"success": False, "message": f"AI获取详情失败: {str(e)}"}
 

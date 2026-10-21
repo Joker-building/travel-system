@@ -9,10 +9,13 @@ TTS（文字转语音）在前端使用浏览器 speechSynthesis 实现，无需
 import os
 import sys
 import json
+import logging
 import wave
 import tempfile
 import struct
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 # 添加 vosk 库路径
 BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -42,21 +45,21 @@ class VoiceService:
             return VoiceService._model
 
         if not os.path.exists(VOSK_MODEL_PATH):
-            print(f"[语音] Vosk 模型未找到: {VOSK_MODEL_PATH}")
-            print("[语音] 请运行 backend/download_vosk_model.py 下载模型")
+            logger.error("[语音] Vosk 模型未找到: %s", VOSK_MODEL_PATH)
+            logger.error("[语音] 请运行 backend/download_vosk_model.py 下载模型")
             return None
 
         try:
             from vosk import Model
             VoiceService._model = Model(VOSK_MODEL_PATH)
             self._model_loaded = True
-            print("[语音] Vosk 模型加载成功")
+            logger.info("[语音] Vosk 模型加载成功")
             return VoiceService._model
         except ImportError:
-            print("[语音] Vosk 库未安装，请运行: pip install vosk")
+            logger.error("[语音] Vosk 库未安装，请运行: pip install vosk")
             return None
         except Exception as e:
-            print(f"[语音] Vosk 模型加载失败: {e}")
+            logger.error("[语音] Vosk 模型加载失败: %s", e, exc_info=True)
             return None
 
     @staticmethod
@@ -98,7 +101,7 @@ class VoiceService:
         """
         model = self._get_model()
         if model is None:
-            print("[语音] 模型未加载，无法识别")
+            logger.warning("[语音] 模型未加载，无法识别")
             return None
 
         tmp_path = None
@@ -114,10 +117,11 @@ class VoiceService:
             nframes = wf.getnframes()
             duration = nframes / framerate if framerate > 0 else 0
 
-            print(f"[语音] 收到音频: channels={nchannels}, width={sampwidth}, rate={framerate}, frames={nframes}, duration={duration:.2f}s, size={len(audio_data)}B")
+            logger.debug("[语音] 收到音频: channels=%s, width=%s, rate=%s, frames=%s, duration=%.2fs, size=%sB",
+                         nchannels, sampwidth, framerate, nframes, duration, len(audio_data))
 
             if nframes == 0 or duration < 0.3:
-                print("[语音] 音频太短或为空，无法识别")
+                logger.warning("[语音] 音频太短或为空，无法识别")
                 wf.close()
                 return None
 
@@ -125,12 +129,12 @@ class VoiceService:
             wf.close()
 
             if nchannels != 1 or sampwidth != 2:
-                print(f"[语音] 音频格式不匹配: channels={nchannels}, width={sampwidth}，需要单声道 16bit PCM")
+                logger.warning("[语音] 音频格式不匹配: channels=%s, width=%s，需要单声道 16bit PCM", nchannels, sampwidth)
                 return None
 
             # 重采样到 16000Hz（如果需要）
             if framerate != 16000:
-                print(f"[语音] 重采样: {framerate}Hz -> 16000Hz")
+                logger.debug("[语音] 重采样: %sHz -> 16000Hz", framerate)
                 audio_frames = self._resample_pcm(audio_frames, framerate, 16000)
                 framerate = 16000
 
@@ -149,16 +153,14 @@ class VoiceService:
             text = final_result.get("text", "")
 
             if text:
-                print(f"[语音] 识别结果: {text}")
+                logger.info("[语音] 识别结果: %s", text)
             else:
-                print("[语音] 识别结果为空")
+                logger.debug("[语音] 识别结果为空")
 
             return text if text else None
 
         except Exception as e:
-            print(f"[语音] STT 错误: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error("[语音] STT 错误: %s", e, exc_info=True)
             return None
         finally:
             if tmp_path:
@@ -177,7 +179,7 @@ class VoiceService:
                 audio_data = f.read()
             return self.stt(audio_data)
         except Exception as e:
-            print(f"[语音] 文件识别错误: {e}")
+            logger.error("[语音] 文件识别错误: %s", e, exc_info=True)
             return None
 
     def is_available(self) -> bool:

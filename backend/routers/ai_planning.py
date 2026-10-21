@@ -39,7 +39,7 @@ async def ai_search_scenic(
     current_user: User = Depends(get_current_user),
 ):
     """AI搜索景点（高德式）：返回多个候选景点卡片，前端挑选后再通过 add-to-trip 加入行程"""
-    result = await AIService.search_scenic(db, req.keyword, req.city)
+    result = await AIService.search_scenic(req.keyword, req.city)
     if result.get("success"):
         return success_response(data=result, message="AI搜索完成，返回候选景点列表")
     return fail_response(message=result.get("message", "AI搜索失败"))

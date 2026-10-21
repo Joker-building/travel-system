@@ -8,6 +8,7 @@
 任何降级都会在返回 dict 的 `warning` 字段与日志中给出明确提示，便于排障。
 """
 
+import logging
 import random
 import time
 import httpx
@@ -15,6 +16,8 @@ from typing import Optional
 from datetime import datetime, timedelta
 
 from config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class WeatherService:
@@ -308,9 +311,10 @@ class WeatherService:
             mock["warning"] = (
                 f"城市「{city}」未收录经纬度，无法查询实时天气，已使用季节性模拟数据（仅供参考）"
             )
-            print(f"[天气] 城市 {city} 无经纬度映射，降级模拟: {mock['warning']} "
-                  f"(生成耗时 {self._elapsed_ms(_t_mock):.1f}ms)")
-            print(f"[天气] get_weather_forecast 总耗时 {self._elapsed_ms(_t_total):.1f}ms (源=mock-无经纬度)")
+            logger.warning("[天气] 城市 %s 无经纬度映射，降级模拟: %s (生成耗时 %.1fms)",
+                          city, mock["warning"], self._elapsed_ms(_t_mock))
+            logger.debug("[天气] get_weather_forecast 总耗时 %.1fms (源=mock-无经纬度)",
+                         self._elapsed_ms(_t_total))
             return mock
 
         warnings: list = []
@@ -322,20 +326,20 @@ class WeatherService:
                 qw_result, qw_err = await self._fetch_from_qweather(city, days, coords)
                 _qw_ms = self._elapsed_ms(_t_qw)
                 if qw_result:
-                    print(f"[天气] 使用和风天气成功: city={city} days={days} (耗时 {_qw_ms:.1f}ms)")
-                    print(f"[天气] get_weather_forecast 总耗时 {self._elapsed_ms(_t_total):.1f}ms (源=qweather)")
+                    logger.info("[天气] 使用和风天气成功: city=%s days=%s (耗时 %.1fms)", city, days, _qw_ms)
+                    logger.debug("[天气] get_weather_forecast 总耗时 %.1fms (源=qweather)", self._elapsed_ms(_t_total))
                     return qw_result
                 warnings.append(f"和风天气不可用（{qw_err}）")
-                print(f"[天气] 和风天气不可用（{qw_err}），降级 Open-Meteo (耗时 {_qw_ms:.1f}ms)")
+                logger.warning("[天气] 和风天气不可用（%s），降级 Open-Meteo (耗时 %.1fms)", qw_err, _qw_ms)
             except Exception as e:  # noqa: BLE001
                 _qw_ms = self._elapsed_ms(_t_qw)
                 warnings.append(f"和风天气异常: {type(e).__name__}: {e}")
-                print(f"[天气] 和风天气异常: {type(e).__name__}: {e}，降级 Open-Meteo (耗时 {_qw_ms:.1f}ms)")
+                logger.warning("[天气] 和风天气异常: %s: %s，降级 Open-Meteo (耗时 %.1fms)", type(e).__name__, e, _qw_ms)
         else:
             warnings.append(
                 "和风天气未配置（QWEATHER_HOST / QWEATHER_KEY 缺失），已降级 Open-Meteo"
             )
-            print("[天气] 和风天气未配置，降级 Open-Meteo（境外接口，国内网络可能不稳定）")
+            logger.info("[天气] 和风天气未配置，降级 Open-Meteo（境外接口，国内网络可能不稳定）")
 
         # 2) 兜底 Open-Meteo
         _t_om = time.perf_counter()
@@ -344,8 +348,8 @@ class WeatherService:
         if om_result.get("success"):
             if warnings:
                 om_result["warning"] = "；".join(warnings) + "（Open-Meteo 为境外接口，国内网络可能不稳定）"
-            print(f"[天气] 使用 Open-Meteo 兜底成功: city={city} (耗时 {_om_ms:.1f}ms)")
-            print(f"[天气] get_weather_forecast 总耗时 {self._elapsed_ms(_t_total):.1f}ms (源=open-meteo)")
+            logger.info("[天气] 使用 Open-Meteo 兜底成功: city=%s (耗时 %.1fms)", city, _om_ms)
+            logger.debug("[天气] get_weather_forecast 总耗时 %.1fms (源=open-meteo)", self._elapsed_ms(_t_total))
             return om_result
 
         warnings.append(om_result.get("warning", "Open-Meteo 调用失败"))
@@ -355,8 +359,8 @@ class WeatherService:
         mock = self._generate_mock_weather(city, days)
         _mock_ms = self._elapsed_ms(_t_mock)
         mock["warning"] = "；".join(warnings) + "；最终使用季节性模拟数据（仅供参考）"
-        print(f"[天气] 和风与 Open-Meteo 均失败，降级模拟: {mock['warning']} (生成耗时 {_mock_ms:.1f}ms)")
-        print(f"[天气] get_weather_forecast 总耗时 {self._elapsed_ms(_t_total):.1f}ms (源=mock)")
+        logger.error("[天气] 和风与 Open-Meteo 均失败，降级模拟: %s (生成耗时 %.1fms)", mock["warning"], _mock_ms)
+        logger.debug("[天气] get_weather_forecast 总耗时 %.1fms (源=mock)", self._elapsed_ms(_t_total))
         return mock
 
     def _deg_to_wind_dir(self, deg: float) -> str:
